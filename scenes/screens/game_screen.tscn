@@ -31,14 +31,14 @@ layout_mode = 2
 theme_override_constants/separation = 16
 
 [node name="HeaderArea" type="HBoxContainer" parent="MarginContainer/VBoxContainer"]
-custom_minimum_size = Vector2(0, 50)
+custom_minimum_size = Vector2(0, 70)
 layout_mode = 2
 theme_override_constants/separation = 12
 
 [node name="PlayerScoreLabel" type="Label" parent="MarginContainer/VBoxContainer/HeaderArea"]
 layout_mode = 2
 size_flags_horizontal = 3
-theme_override_font_sizes/font_size = 22
+theme_override_font_sizes/font_size = 36
 text = "Spieler: 0 Punkte"
 horizontal_alignment = 0
 vertical_alignment = 1
@@ -46,7 +46,7 @@ vertical_alignment = 1
 [node name="RoundLabel" type="Label" parent="MarginContainer/VBoxContainer/HeaderArea"]
 layout_mode = 2
 size_flags_horizontal = 3
-theme_override_font_sizes/font_size = 22
+theme_override_font_sizes/font_size = 36
 text = "Runde 1"
 horizontal_alignment = 1
 vertical_alignment = 1
@@ -54,55 +54,33 @@ vertical_alignment = 1
 [node name="OpponentScoreLabel" type="Label" parent="MarginContainer/VBoxContainer/HeaderArea"]
 layout_mode = 2
 size_flags_horizontal = 3
-theme_override_font_sizes/font_size = 22
+theme_override_font_sizes/font_size = 36
 text = "Gegner: 0 Punkte"
 horizontal_alignment = 2
 vertical_alignment = 1
 
+[node name="SettingsButton" type="Button" parent="MarginContainer/VBoxContainer/HeaderArea"]
+custom_minimum_size = Vector2(60, 60)
+layout_mode = 2
+size_flags_vertical = 4
+theme_override_font_sizes/font_size = 32
+text = "☰"
+
 [node name="DebugLabel" type="Label" parent="MarginContainer/VBoxContainer" unique_id=187737156]
 custom_minimum_size = Vector2(0, 80)
 layout_mode = 2
-theme_override_font_sizes/font_size = 18
+theme_override_font_sizes/font_size = 28
 text = "Status"
 autowrap_mode = 2
 
-[node name="OpponentArea" type="PanelContainer" parent="MarginContainer/VBoxContainer"]
+[node name="OpponentArea" type="VBoxContainer" parent="MarginContainer/VBoxContainer"]
 custom_minimum_size = Vector2(0, 100)
 layout_mode = 2
+theme_override_constants/separation = 8
 
-[node name="OpponentContent" type="HBoxContainer" parent="MarginContainer/VBoxContainer/OpponentArea"]
+[node name="OpponentTableSpacer" type="Control" parent="MarginContainer/VBoxContainer"]
+custom_minimum_size = Vector2(0, 24)
 layout_mode = 2
-theme_override_constants/separation = 12
-
-[node name="OpponentLabel" type="Label" parent="MarginContainer/VBoxContainer/OpponentArea/OpponentContent"]
-layout_mode = 2
-size_flags_vertical = 4
-theme_override_font_sizes/font_size = 28
-text = "Gegner"
-vertical_alignment = 1
-
-[node name="OpponentBadge" type="PanelContainer" parent="MarginContainer/VBoxContainer/OpponentArea/OpponentContent"]
-custom_minimum_size = Vector2(50, 50)
-layout_mode = 2
-size_flags_vertical = 4
-
-[node name="OpponentBadgeLabel" type="Label" parent="MarginContainer/VBoxContainer/OpponentArea/OpponentContent/OpponentBadge"]
-layout_mode = 2
-theme_override_font_sizes/font_size = 26
-text = "13"
-horizontal_alignment = 1
-vertical_alignment = 1
-
-[node name="OpponentScroll" type="ScrollContainer" parent="MarginContainer/VBoxContainer/OpponentArea/OpponentContent"]
-layout_mode = 2
-size_flags_horizontal = 3
-horizontal_scroll_mode = 1
-vertical_scroll_mode = 0
-
-[node name="OpponentHandArea" type="HBoxContainer" parent="MarginContainer/VBoxContainer/OpponentArea/OpponentContent/OpponentScroll"]
-layout_mode = 2
-size_flags_vertical = 4
-theme_override_constants/separation = -30
 
 [node name="TableArea" type="HBoxContainer" parent="MarginContainer/VBoxContainer" unique_id=2137201156]
 layout_mode = 2
@@ -110,7 +88,7 @@ theme_override_constants/separation = 32
 alignment = 1
 
 [node name="TischArea" type="PanelContainer" parent="MarginContainer/VBoxContainer"]
-custom_minimum_size = Vector2(0, 130)
+custom_minimum_size = Vector2(0, 65)
 layout_mode = 2
 size_flags_vertical = 3
 
@@ -120,13 +98,13 @@ theme_override_constants/separation = 4
 
 [node name="TischLabel" type="Label" parent="MarginContainer/VBoxContainer/TischArea/TischContent"]
 layout_mode = 2
-theme_override_font_sizes/font_size = 18
+theme_override_font_sizes/font_size = 22
 text = "Tisch"
 
 [node name="EmptyMeldsLabel" type="Label" parent="MarginContainer/VBoxContainer/TischArea/TischContent"]
 layout_mode = 2
 size_flags_vertical = 3
-theme_override_font_sizes/font_size = 24
+theme_override_font_sizes/font_size = 28
 text = "Noch keine Meldungen auf dem Tisch"
 horizontal_alignment = 1
 vertical_alignment = 1
@@ -141,87 +119,159 @@ vertical_scroll_mode = 0
 layout_mode = 2
 theme_override_constants/separation = 10
 
-[node name="PlayerHandArea" type="HBoxContainer" parent="MarginContainer/VBoxContainer" unique_id=816106284]
-custom_minimum_size = Vector2(0, 110)
+[node name="PlayerArea" type="VBoxContainer" parent="MarginContainer/VBoxContainer"]
+layout_mode = 2
+size_flags_vertical = 3
+theme_override_constants/separation = 16
+alignment = 2
+
+[node name="PlayerHandArea" type="HBoxContainer" parent="MarginContainer/VBoxContainer/PlayerArea" unique_id=816106284]
+custom_minimum_size = Vector2(0, 161)
 layout_mode = 2
 theme_override_constants/separation = -40
 
-[node name="ActionArea" type="VBoxContainer" parent="MarginContainer/VBoxContainer" unique_id=292864480]
+[node name="ActionArea" type="VBoxContainer" parent="MarginContainer/VBoxContainer/PlayerArea" unique_id=292864480]
 layout_mode = 2
 theme_override_constants/separation = 8
 
-[node name="PhaseIndicatorRow" type="HBoxContainer" parent="MarginContainer/VBoxContainer/ActionArea"]
-custom_minimum_size = Vector2(0, 36)
+[node name="PhaseIndicatorRow" type="HBoxContainer" parent="MarginContainer/VBoxContainer/PlayerArea/ActionArea"]
+custom_minimum_size = Vector2(0, 50)
 layout_mode = 2
 theme_override_constants/separation = 16
 alignment = 1
 
-[node name="MainActionsRow" type="HBoxContainer" parent="MarginContainer/VBoxContainer/ActionArea" unique_id=1256528212]
-custom_minimum_size = Vector2(0, 55)
+[node name="ContextActionsRow" type="HBoxContainer" parent="MarginContainer/VBoxContainer/PlayerArea/ActionArea" unique_id=1449308684]
+custom_minimum_size = Vector2(0, 110)
 layout_mode = 2
-theme_override_constants/separation = 12
+theme_override_constants/separation = 16
 alignment = 1
 
-[node name="DrawDeckButton" type="Button" parent="MarginContainer/VBoxContainer/ActionArea/MainActionsRow" unique_id=1859649044]
+[node name="MeldungLegenButton" type="Button" parent="MarginContainer/VBoxContainer/PlayerArea/ActionArea/ContextActionsRow" unique_id=2089280105]
 layout_mode = 2
 size_flags_horizontal = 3
-theme_override_font_sizes/font_size = 18
-text = "Deck"
-
-[node name="DrawDiscardButton" type="Button" parent="MarginContainer/VBoxContainer/ActionArea/MainActionsRow" unique_id=622916577]
-layout_mode = 2
-size_flags_horizontal = 3
-theme_override_font_sizes/font_size = 18
-text = "Ablage"
-
-[node name="SortButton" type="Button" parent="MarginContainer/VBoxContainer/ActionArea/MainActionsRow" unique_id=825105]
-layout_mode = 2
-size_flags_horizontal = 3
-theme_override_font_sizes/font_size = 18
-text = "Sort"
-
-[node name="EndTurnButton" type="Button" parent="MarginContainer/VBoxContainer/ActionArea/MainActionsRow" unique_id=482016298]
-layout_mode = 2
-size_flags_horizontal = 3
-theme_override_font_sizes/font_size = 18
-text = "Bot Zug"
-
-[node name="NewGameButton" type="Button" parent="MarginContainer/VBoxContainer/ActionArea/MainActionsRow" unique_id=1377957609]
-layout_mode = 2
-size_flags_horizontal = 3
-theme_override_font_sizes/font_size = 18
-text = "Neu"
-
-[node name="ContextActionsRow" type="HBoxContainer" parent="MarginContainer/VBoxContainer/ActionArea" unique_id=1449308684]
-custom_minimum_size = Vector2(0, 50)
-layout_mode = 2
-theme_override_constants/separation = 12
-alignment = 1
-
-[node name="MeldungLegenButton" type="Button" parent="MarginContainer/VBoxContainer/ActionArea/ContextActionsRow" unique_id=2089280105]
-visible = false
-layout_mode = 2
-size_flags_horizontal = 3
-theme_override_font_sizes/font_size = 18
+theme_override_font_sizes/font_size = 32
 text = "Meldung legen"
 
-[node name="AnlegenButton" type="Button" parent="MarginContainer/VBoxContainer/ActionArea/ContextActionsRow" unique_id=294200722]
-visible = false
+[node name="AnlegenButton" type="Button" parent="MarginContainer/VBoxContainer/PlayerArea/ActionArea/ContextActionsRow" unique_id=294200722]
 layout_mode = 2
 size_flags_horizontal = 3
-theme_override_font_sizes/font_size = 18
+theme_override_font_sizes/font_size = 32
 text = "Anlegen"
 
-[node name="AbwerfenButton" type="Button" parent="MarginContainer/VBoxContainer/ActionArea/ContextActionsRow" unique_id=850537103]
-visible = false
+[node name="AbwerfenButton" type="Button" parent="MarginContainer/VBoxContainer/PlayerArea/ActionArea/ContextActionsRow" unique_id=850537103]
 layout_mode = 2
 size_flags_horizontal = 3
-theme_override_font_sizes/font_size = 18
+theme_override_font_sizes/font_size = 32
 text = "Abwerfen"
 
-[node name="DeselectButton" type="Button" parent="MarginContainer/VBoxContainer/ActionArea/ContextActionsRow" unique_id=528937420]
+[node name="MenuOverlay" type="Control" parent="."]
 visible = false
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+
+[node name="MenuOverlayBg" type="ColorRect" parent="MenuOverlay"]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+color = Color(0, 0, 0, 0.6)
+
+[node name="MenuPanel" type="PanelContainer" parent="MenuOverlay"]
+layout_mode = 1
+anchors_preset = 8
+anchor_left = 0.5
+anchor_top = 0.5
+anchor_right = 0.5
+anchor_bottom = 0.5
+offset_left = -240.0
+offset_top = -170.0
+offset_right = 240.0
+offset_bottom = 170.0
+grow_horizontal = 2
+grow_vertical = 2
+
+[node name="MenuVBox" type="VBoxContainer" parent="MenuOverlay/MenuPanel"]
 layout_mode = 2
-size_flags_horizontal = 3
-theme_override_font_sizes/font_size = 18
-text = "Auswahl aufheben"
+theme_override_constants/separation = 20
+
+[node name="MenuTitleLabel" type="Label" parent="MenuOverlay/MenuPanel/MenuVBox"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 32
+text = "Menü"
+horizontal_alignment = 1
+
+[node name="NewGameConfirmButton" type="Button" parent="MenuOverlay/MenuPanel/MenuVBox"]
+layout_mode = 2
+custom_minimum_size = Vector2(0, 70)
+theme_override_font_sizes/font_size = 28
+text = "Neues Spiel"
+
+[node name="MenuCancelButton" type="Button" parent="MenuOverlay/MenuPanel/MenuVBox"]
+layout_mode = 2
+custom_minimum_size = Vector2(0, 70)
+theme_override_font_sizes/font_size = 28
+text = "Abbrechen"
+
+[node name="SetupOverlay" type="Control" parent="."]
+visible = false
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+
+[node name="SetupOverlayBg" type="ColorRect" parent="SetupOverlay"]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+color = Color(0, 0, 0, 0.85)
+
+[node name="SetupPanel" type="PanelContainer" parent="SetupOverlay"]
+layout_mode = 1
+anchors_preset = 8
+anchor_left = 0.5
+anchor_top = 0.5
+anchor_right = 0.5
+anchor_bottom = 0.5
+offset_left = -260.0
+offset_top = -250.0
+offset_right = 260.0
+offset_bottom = 250.0
+grow_horizontal = 2
+grow_vertical = 2
+
+[node name="SetupVBox" type="VBoxContainer" parent="SetupOverlay/SetupPanel"]
+layout_mode = 2
+theme_override_constants/separation = 20
+
+[node name="SetupTitleLabel" type="Label" parent="SetupOverlay/SetupPanel/SetupVBox"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 32
+text = "Wie viele Gegner?"
+horizontal_alignment = 1
+
+[node name="Opponents1Button" type="Button" parent="SetupOverlay/SetupPanel/SetupVBox"]
+layout_mode = 2
+custom_minimum_size = Vector2(0, 70)
+theme_override_font_sizes/font_size = 28
+text = "1 Gegner"
+
+[node name="Opponents2Button" type="Button" parent="SetupOverlay/SetupPanel/SetupVBox"]
+layout_mode = 2
+custom_minimum_size = Vector2(0, 70)
+theme_override_font_sizes/font_size = 28
+text = "2 Gegner"
+
+[node name="Opponents3Button" type="Button" parent="SetupOverlay/SetupPanel/SetupVBox"]
+layout_mode = 2
+custom_minimum_size = Vector2(0, 70)
+theme_override_font_sizes/font_size = 28
+text = "3 Gegner"
+
+[node name="Opponents4Button" type="Button" parent="SetupOverlay/SetupPanel/SetupVBox"]
+layout_mode = 2
+custom_minimum_size = Vector2(0, 70)
+theme_override_font_sizes/font_size = 28
+text = "4 Gegner"

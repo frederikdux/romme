@@ -6,12 +6,18 @@ extends Control
 
 const CardViewScene: PackedScene = preload("res://scenes/components/card_view.tscn")
 
-## Hand card size (min 65x90) and how much stays visible per overlapping card
-## (achieved via negative HBoxContainer separation, set in the .tscn).
-const CARD_WIDTH := 65.0
-const CARD_HEIGHT := 90.0
+## Hand card size. Cards always span the full width of PlayerHandArea —
+## _render_hand() computes the HBoxContainer separation from the available
+## width and the current card count so they spread out evenly.
+const CARD_WIDTH := 95.0
+const CARD_HEIGHT := 132.0
 ## Pixels a selected card moves upward. Slot height = CARD_HEIGHT + SELECTION_LIFT_PX.
-const SELECTION_LIFT_PX := 20.0
+const SELECTION_LIFT_PX := 29.0
+
+## MarginContainer's left+right margins, used as a fallback to compute
+## PlayerHandArea's width before the first layout pass (when its .size.x is
+## still 0).
+const HORIZONTAL_MARGIN := 32.0
 
 ## Size of a single mini card inside a table meld group, and how much
 ## consecutive cards overlap (achieved via negative HBoxContainer separation).
@@ -20,10 +26,32 @@ const MELD_CARD_HEIGHT := 90.0
 const MELD_CARD_OVERLAP := 15.0
 const MELD_GROUP_PADDING := 8.0
 
-## Size of a face-down card in the opponent's hand row (real card-back size,
-## ~60% overlap achieved via negative HBoxContainer separation in the .tscn).
-const OPPONENT_CARD_WIDTH := 50.0
-const OPPONENT_CARD_HEIGHT := 70.0
+## Size of a face-down card in an opponent's hand row, for the single-opponent
+## (N=1) layout vs. the compact layout (N>=2). Separation between cards is
+## computed in _fill_opponent_hand_area() to spread/overlap them to fit.
+const OPPONENT_CARD_WIDTH_SINGLE := 50.0
+const OPPONENT_CARD_HEIGHT_SINGLE := 70.0
+const OPPONENT_CARD_WIDTH_COMPACT := 38.0
+const OPPONENT_CARD_HEIGHT_COMPACT := 53.0
+const OPPONENT_NAME_FONT_SIZE_SINGLE := 34
+const OPPONENT_NAME_FONT_SIZE_COMPACT := 22
+const OPPONENT_BADGE_FONT_SIZE_SINGLE := 30
+const OPPONENT_BADGE_FONT_SIZE_COMPACT := 20
+const OPPONENT_BADGE_SIZE_SINGLE := 50.0
+const OPPONENT_BADGE_SIZE_COMPACT := 36.0
+## Minimum (most negative) HBoxContainer separation allowed between opponent
+## cards — caps how much they're allowed to overlap when a hand is large.
+const OPPONENT_CARD_MIN_SEPARATION_SINGLE := -30.0
+const OPPONENT_CARD_MIN_SEPARATION_COMPACT := -34.0
+const OPPONENT_ROW_HEIGHT_SINGLE := 100.0
+const OPPONENT_ROW_HEIGHT_COMPACT := 92.0
+const OPPONENT_ROW_GAP := 8.0
+## Highlight for the opponent slot whose turn it currently is.
+const OPPONENT_ACTIVE_BORDER_COLOR := Color(1.0, 0.85, 0.2) # gold
+const OPPONENT_ACTIVE_BORDER_WIDTH := 3
+## Visual size of the bot draw/discard "flying card" animation, regardless of
+## the opponent layout's (single/compact) card size.
+const FLYING_CARD_SIZE := Vector2(50.0, 70.0)
 
 ## Size of the deck/discard pile cards on the table, and the offset of the
 ## "stacked" shadow cards behind the front card.
@@ -47,11 +75,24 @@ const PHASE_COLOR_ACTIVE := Color(1.0, 1.0, 1.0)
 const PHASE_COLOR_DONE := Color(0.3, 0.85, 0.3)
 const PHASE_COLOR_PENDING := Color(0.5, 0.5, 0.5, 0.6)
 const PHASE_ARROW_COLOR := Color(0.5, 0.5, 0.5)
-const PHASE_FONT_SIZE := 16
+const PHASE_FONT_SIZE := 24
 
 ## Opacity applied to action buttons that are disabled, so the player can see
 ## at a glance which actions aren't relevant in the current turn phase.
-const DISABLED_BUTTON_OPACITY := 0.35
+const DISABLED_BUTTON_OPACITY := 0.3
+
+## Delay before each bot automatically takes its turn (after the human
+## discards, and between chained bots), so the turn change feels natural.
+const BOT_TURN_DELAY_SEC := 0.8
+## Pause between each visible step of a bot's turn (draw / meld / extend /
+## discard) so the sequence is easy to follow.
+const BOT_STEP_DELAY_SEC := 0.5
+
+## Pulsing glow shown around the deck/discard piles while they're clickable
+## (i.e. during the draw phase), and the hover/touch scale-up factor.
+const PILE_GLOW_COLOR := Color(1.0, 0.85, 0.2) # gold
+const PILE_GLOW_SHADOW_SIZE := 18
+const PILE_HOVER_SCALE := 1.08
 
 ## Action button accent colors.
 const COLOR_ACCENT_BLUE := Color(0.129, 0.588, 0.953) # #2196F3
@@ -90,25 +131,31 @@ var tisch_area: PanelContainer
 var melds_row: Control
 var melds_scroll: Control
 var empty_melds_label: Control
-var opponent_area: PanelContainer
-var opponent_hand_area: Control
-var opponent_badge: PanelContainer
-var opponent_badge_label: Label
+var opponent_area: VBoxContainer
+## Hand-area HBoxContainers for each bot, indexed by (bot_number - 1).
+## Rebuilt every _render_opponent_areas() call.
+var _opponent_hand_areas: Array[Control] = []
 ## References to the dynamically rebuilt pile views — used as animation
 ## start/end points for the bot draw/discard "flying card" effect.
 var deck_pile_view: Control
 var discard_pile_view: Control
-var draw_deck_button: Button
-var draw_discard_button: Button
-var sort_button: Button
-var end_turn_button: Button
-var new_game_button: Button
 var debug_label: Label
 var meldung_legen_button: Button
 var anlegen_button: Button
 var abwerfen_button: Button
-var deselect_button: Button
 var phase_indicator_row: Control
+var settings_button: Button
+var menu_overlay: Control
+var menu_overlay_bg: Control
+var new_game_confirm_button: Button
+var menu_cancel_button: Button
+var setup_overlay: Control
+var opponents_1_button: Button
+var opponents_2_button: Button
+var opponents_3_button: Button
+var opponents_4_button: Button
+## Re-entrancy guard for _run_bot_turn_sequence().
+var _bot_turn_in_progress: bool = false
 
 func _ready() -> void:
 	set_anchors_preset(Control.PRESET_FULL_RECT)
@@ -127,33 +174,40 @@ func _ready() -> void:
 	melds_row = _require_node("MeldsRow") as Control
 	melds_scroll = _require_node("MeldsScroll") as Control
 	empty_melds_label = _require_node("EmptyMeldsLabel") as Control
-	opponent_area = _require_node("OpponentArea") as PanelContainer
-	opponent_hand_area = _require_node("OpponentHandArea") as Control
-	opponent_badge = _require_node("OpponentBadge") as PanelContainer
-	opponent_badge_label = _require_node("OpponentBadgeLabel") as Label
-	draw_deck_button = _require_node("DrawDeckButton") as Button
-	draw_discard_button = _require_node("DrawDiscardButton") as Button
-	sort_button = _require_node("SortButton") as Button
-	end_turn_button = _require_node("EndTurnButton") as Button
-	new_game_button = _require_node("NewGameButton") as Button
+	opponent_area = _require_node("OpponentArea") as VBoxContainer
 	debug_label = _require_node("DebugLabel") as Label
 	meldung_legen_button = _require_node("MeldungLegenButton") as Button
 	anlegen_button = _require_node("AnlegenButton") as Button
 	abwerfen_button = _require_node("AbwerfenButton") as Button
-	deselect_button = _require_node("DeselectButton") as Button
 	phase_indicator_row = _require_node("PhaseIndicatorRow") as Control
+	settings_button = _require_node("SettingsButton") as Button
+	menu_overlay = _require_node("MenuOverlay") as Control
+	menu_overlay_bg = _require_node("MenuOverlayBg") as Control
+	new_game_confirm_button = _require_node("NewGameConfirmButton") as Button
+	menu_cancel_button = _require_node("MenuCancelButton") as Button
+	setup_overlay = _require_node("SetupOverlay") as Control
+	opponents_1_button = _require_node("Opponents1Button") as Button
+	opponents_2_button = _require_node("Opponents2Button") as Button
+	opponents_3_button = _require_node("Opponents3Button") as Button
+	opponents_4_button = _require_node("Opponents4Button") as Button
 
-	draw_deck_button.pressed.connect(_on_draw_deck_pressed)
-	draw_discard_button.pressed.connect(_on_draw_discard_pressed)
-	sort_button.pressed.connect(_on_sort_pressed)
-	end_turn_button.pressed.connect(_on_end_turn_pressed)
-	new_game_button.pressed.connect(_on_new_game_pressed)
 	meldung_legen_button.pressed.connect(_on_meldung_legen_pressed)
 	anlegen_button.pressed.connect(_on_anlegen_pressed)
 	abwerfen_button.pressed.connect(_on_abwerfen_pressed)
-	deselect_button.pressed.connect(_on_deselect_pressed)
+	settings_button.pressed.connect(_on_settings_pressed)
+	new_game_confirm_button.pressed.connect(_on_new_game_confirm_pressed)
+	menu_cancel_button.pressed.connect(_on_menu_cancel_pressed)
+	opponents_1_button.pressed.connect(_on_opponent_count_selected.bind(1))
+	opponents_2_button.pressed.connect(_on_opponent_count_selected.bind(2))
+	opponents_3_button.pressed.connect(_on_opponent_count_selected.bind(3))
+	opponents_4_button.pressed.connect(_on_opponent_count_selected.bind(4))
 
 	background_rect.color = COLOR_BACKGROUND
+	background_rect.mouse_filter = Control.MOUSE_FILTER_STOP
+	background_rect.gui_input.connect(_on_background_gui_input)
+
+	menu_overlay_bg.mouse_filter = Control.MOUSE_FILTER_STOP
+	menu_overlay_bg.gui_input.connect(_on_menu_overlay_bg_gui_input)
 
 	var tisch_style: StyleBoxFlat = StyleBoxFlat.new()
 	tisch_style.bg_color = COLOR_TISCH_BG
@@ -161,25 +215,24 @@ func _ready() -> void:
 	tisch_style.set_content_margin_all(10)
 	tisch_area.add_theme_stylebox_override("panel", tisch_style)
 
-	var opponent_style: StyleBoxFlat = StyleBoxFlat.new()
-	opponent_style.bg_color = COLOR_PANEL_BG
-	opponent_style.set_corner_radius_all(8)
-	opponent_style.set_content_margin_all(10)
-	opponent_area.add_theme_stylebox_override("panel", opponent_style)
-
-	var badge_style: StyleBoxFlat = StyleBoxFlat.new()
-	badge_style.bg_color = Color(0.8, 0.2, 0.2)
-	badge_style.set_corner_radius_all(25)
-	opponent_badge.add_theme_stylebox_override("panel", badge_style)
+	var menu_panel_style: StyleBoxFlat = StyleBoxFlat.new()
+	menu_panel_style.bg_color = COLOR_PANEL_BG
+	menu_panel_style.set_corner_radius_all(12)
+	menu_panel_style.set_content_margin_all(24)
+	(_require_node("MenuPanel") as PanelContainer).add_theme_stylebox_override("panel", menu_panel_style)
+	(_require_node("SetupPanel") as PanelContainer).add_theme_stylebox_override("panel", menu_panel_style.duplicate())
 
 	# Static button colors — never change with turn phase.
-	_style_button(sort_button, COLOR_GREY_NEUTRAL)
-	_style_button(end_turn_button, COLOR_GREY_DARK)
-	_style_button(new_game_button, COLOR_GREY_DARK)
+	_style_button(settings_button, COLOR_GREY_DARK)
+	_style_button(new_game_confirm_button, COLOR_ACCENT_BLUE)
+	_style_button(menu_cancel_button, COLOR_GREY_NEUTRAL)
+	_style_button(opponents_1_button, COLOR_ACCENT_BLUE)
+	_style_button(opponents_2_button, COLOR_ACCENT_BLUE)
+	_style_button(opponents_3_button, COLOR_ACCENT_BLUE)
+	_style_button(opponents_4_button, COLOR_ACCENT_BLUE)
 
 	game_state = GameState.new()
-	game_state.new_game()
-	_refresh_ui()
+	setup_overlay.visible = true
 
 ## Finds a required child node by name or fails loudly.
 func _require_node(node_name: String) -> Node:
@@ -191,42 +244,6 @@ func _require_node(node_name: String) -> Node:
 	return node
 
 # ── Button handlers ───────────────────────────────────────────────────────────
-
-func _on_draw_deck_pressed() -> void:
-	_clear_selection()
-	game_state.human_draw_from_deck()
-	_refresh_ui()
-
-func _on_draw_discard_pressed() -> void:
-	_clear_selection()
-	game_state.human_draw_from_discard()
-	_refresh_ui()
-
-func _on_sort_pressed() -> void:
-	_clear_selection()
-	game_state.human_sort_hand()
-	_refresh_ui()
-
-func _on_end_turn_pressed() -> void:
-	var should_animate := not game_state.is_human_turn() and not game_state.game_over
-
-	# Capture pile/opponent positions BEFORE the state changes and the UI
-	# rebuilds, so the animation can fly between the old (still valid) rects.
-	var deck_rect := deck_pile_view.get_global_rect()
-	var discard_rect := discard_pile_view.get_global_rect()
-	var opponent_rect := opponent_hand_area.get_global_rect()
-	var opponent_pos := opponent_rect.position + Vector2(opponent_rect.size.x, opponent_rect.size.y * 0.5)
-
-	game_state.bot_take_turn_simple()
-	_refresh_ui()
-
-	if should_animate:
-		_animate_bot_turn(deck_rect, opponent_pos, discard_rect)
-
-func _on_new_game_pressed() -> void:
-	_clear_selection()
-	game_state.new_game()
-	_refresh_ui()
 
 func _on_meldung_legen_pressed() -> void:
 	if game_state.human_lay_meld(selected_card_indices):
@@ -243,12 +260,121 @@ func _on_anlegen_pressed() -> void:
 func _on_abwerfen_pressed() -> void:
 	if selected_card_indices.size() != 1:
 		return
-	if game_state.human_discard_card(selected_card_indices[0]):
+	var discarded := game_state.human_discard_card(selected_card_indices[0])
+	if discarded:
 		_clear_selection()
 	_refresh_ui()
+	if discarded and not game_state.game_over and not game_state.is_human_turn():
+		_schedule_bot_turn()
 
-func _on_deselect_pressed() -> void:
+# ── Pile draw handlers ────────────────────────────────────────────────────────
+
+func _on_deck_pile_pressed() -> void:
 	_clear_selection()
+	game_state.human_draw_from_deck()
+	_refresh_ui()
+
+func _on_discard_pile_pressed() -> void:
+	_clear_selection()
+	game_state.human_draw_from_discard()
+	_refresh_ui()
+
+# ── Bot turn ──────────────────────────────────────────────────────────────────
+
+## Starts a short timer after the human discards, then runs the bot turn
+## sequence — gives the turn change a natural pause instead of feeling instant.
+func _schedule_bot_turn() -> void:
+	get_tree().create_timer(BOT_TURN_DELAY_SEC).timeout.connect(_run_bot_turn_sequence)
+
+## Runs every queued bot's turn back-to-back (1-4 bots) until play returns to
+## the human or the game ends.
+func _run_bot_turn_sequence() -> void:
+	if _bot_turn_in_progress:
+		return
+	_bot_turn_in_progress = true
+
+	while not game_state.game_over and not game_state.is_human_turn():
+		await _run_single_bot_turn()
+		if game_state.game_over or game_state.is_human_turn():
+			break
+		await get_tree().create_timer(BOT_TURN_DELAY_SEC).timeout
+
+	_bot_turn_in_progress = false
+
+## Runs one bot's full turn (draw -> melds* -> extends* -> discard), pacing
+## each visible step with BOT_STEP_DELAY_SEC and animating flying cards
+## to/from that bot's row.
+func _run_single_bot_turn() -> void:
+	var bot_number := game_state.current_player_index
+	var bot_name := game_state.get_player_name(bot_number)
+	var opponent_pos := _get_opponent_anchor(bot_number)
+	var deck_rect := deck_pile_view.get_global_rect()
+	var discard_rect := discard_pile_view.get_global_rect()
+
+	game_state.status_text = "%s denkt..." % bot_name
+	_refresh_ui()
+	await get_tree().create_timer(BOT_STEP_DELAY_SEC).timeout
+
+	# Draw
+	var draw_result := game_state.bot_draw_step()
+	if draw_result.get("card") != null:
+		var deck_pos := deck_rect.position + deck_rect.size * 0.5 - FLYING_CARD_SIZE * 0.5
+		var opp_pos := opponent_pos - FLYING_CARD_SIZE * 0.5
+		_spawn_flying_card(deck_pos, opp_pos)
+	game_state.status_text = "%s denkt..." % bot_name
+	_refresh_ui()
+	await get_tree().create_timer(BOT_STEP_DELAY_SEC).timeout
+
+	# Lay melds (repeat until none left)
+	var meld_result := game_state.bot_meld_step()
+	while meld_result.get("laid"):
+		game_state.status_text = "%s denkt..." % bot_name
+		_refresh_ui()
+		await get_tree().create_timer(BOT_STEP_DELAY_SEC).timeout
+		meld_result = game_state.bot_meld_step()
+
+	# Extend melds (repeat until none left)
+	var extend_result := game_state.bot_extend_step()
+	while extend_result.get("extended"):
+		game_state.status_text = "%s denkt..." % bot_name
+		_refresh_ui()
+		await get_tree().create_timer(BOT_STEP_DELAY_SEC).timeout
+		extend_result = game_state.bot_extend_step()
+
+	if game_state.game_over:
+		_refresh_ui()
+		return
+
+	# Discard
+	var discard_result := game_state.bot_discard_step()
+	if discard_result.get("discarded") != null:
+		var opp_pos := opponent_pos - FLYING_CARD_SIZE * 0.5
+		var discard_pos := discard_rect.position + discard_rect.size * 0.5 - FLYING_CARD_SIZE * 0.5
+		_spawn_flying_card(opp_pos, discard_pos)
+	_refresh_ui()
+
+# ── Menu overlay ──────────────────────────────────────────────────────────────
+
+func _on_settings_pressed() -> void:
+	menu_overlay.visible = true
+
+func _on_menu_cancel_pressed() -> void:
+	menu_overlay.visible = false
+
+func _on_menu_overlay_bg_gui_input(event: InputEvent) -> void:
+	if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
+		_on_menu_cancel_pressed()
+
+func _on_new_game_confirm_pressed() -> void:
+	menu_overlay.visible = false
+	setup_overlay.visible = true
+
+# ── Setup overlay ─────────────────────────────────────────────────────────────
+
+func _on_opponent_count_selected(count: int) -> void:
+	setup_overlay.visible = false
+	_clear_selection()
+	game_state.new_game(count)
 	_refresh_ui()
 
 ## Toggles selection of a table meld (click to select, click again to deselect).
@@ -293,6 +419,28 @@ func _clear_selection() -> void:
 	selected_card_indices.clear()
 	selected_meld_index = -1
 
+## Deselects all selected cards/melds, animating any lifted cards back down.
+## Called when the player taps an empty area of the screen.
+func _deselect_all() -> void:
+	if selected_card_indices.is_empty() and selected_meld_index < 0:
+		return
+	for hand_index in selected_card_indices:
+		if hand_index >= 0 and hand_index < _card_views.size():
+			var card_view := _card_views[hand_index]
+			if is_instance_valid(card_view):
+				card_view.set_selected(false)
+		_animate_card_lift(hand_index, false)
+	_clear_selection()
+	_update_action_buttons()
+	_render_phase_indicator()
+	_render_tisch()
+
+## Tapping anywhere outside the cards/buttons/melds (i.e. directly on the
+## background) deselects the current selection.
+func _on_background_gui_input(event: InputEvent) -> void:
+	if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
+		_deselect_all()
+
 # ── UI refresh ────────────────────────────────────────────────────────────────
 
 ## Sets a button's enabled state. Disabled buttons stay visible (so the
@@ -332,27 +480,16 @@ func _update_action_buttons() -> void:
 	var is_human: bool = game_state.is_human_turn()
 	var over: bool = game_state.game_over
 
-	# Ziehen-Phase: drawing is only possible before a card has been drawn.
-	var can_draw: bool = is_human and not drawn and not over
-	_set_button_state(draw_deck_button, can_draw)
-	_set_button_state(draw_discard_button, can_draw)
-	_style_button(draw_deck_button, COLOR_ACCENT_BLUE if can_draw else COLOR_GREY_NEUTRAL)
-	_style_button(draw_discard_button, COLOR_ACCENT_BLUE if can_draw else COLOR_GREY_NEUTRAL)
-	end_turn_button.disabled = is_human or over
-	sort_button.disabled = over
-
-	# Context buttons — always in ContextActionsRow (fixed height, always
-	# visible); disabled + dimmed when not relevant to the current phase.
+	# Action buttons — always visible (fixed height row), disabled + dimmed
+	# when not relevant to the current phase.
 	_set_button_state(meldung_legen_button, count >= 3 and drawn and is_human and not over)
 	_set_button_state(anlegen_button, count >= 1 and has_target and drawn
 							  and is_human and game_state.human_has_melded and not over)
 	_set_button_state(abwerfen_button, count == 1 and drawn and is_human and not over)
-	_set_button_state(deselect_button, (count > 0 or has_target) and not over)
 
 	_style_button(meldung_legen_button, COLOR_GREEN)
 	_style_button(anlegen_button, COLOR_ACCENT_BLUE)
 	_style_button(abwerfen_button, COLOR_RED)
-	_style_button(deselect_button, COLOR_GREY_NEUTRAL)
 
 func _refresh_ui() -> void:
 	_render_header()
@@ -360,7 +497,7 @@ func _refresh_ui() -> void:
 	_render_hand()
 	_render_table()
 	_render_tisch()
-	_render_opponent_hand()
+	_render_opponent_areas()
 	_update_action_buttons()
 	debug_label.text = game_state.get_status_text()
 
@@ -420,19 +557,23 @@ func _render_phase_indicator() -> void:
 
 # ── Header rendering ──────────────────────────────────────────────────────────
 
-## Updates the top header bar: own/opponent penalty points (if the round
-## ended right now) and the round counter. Own points turn orange once they
-## exceed HIGH_PENALTY_THRESHOLD, green otherwise; round/opponent stay white.
+## Updates the top header bar: own penalty points (if the round ended right
+## now), the opponent's points (only shown when there's a single opponent),
+## and the round counter. Own points turn orange once they exceed
+## HIGH_PENALTY_THRESHOLD, green otherwise; round/opponent stay white.
 func _render_header() -> void:
 	var player_points: int = game_state.get_human_penalty_points()
-	var opponent_points: int = game_state.get_bot_penalty_points()
 
 	header_player_label.text = "Spieler: %d Punkte" % player_points
-	header_opponent_label.text = "Gegner: %d Punkte" % opponent_points
 	header_round_label.text = "Runde %d" % game_state.round_number
-
-	header_opponent_label.add_theme_color_override("font_color", HEADER_TEXT_COLOR)
 	header_round_label.add_theme_color_override("font_color", HEADER_TEXT_COLOR)
+
+	if game_state.num_opponents == 1:
+		header_opponent_label.visible = true
+		header_opponent_label.text = "Gegner: %d Punkte" % game_state.get_bot_penalty_points(1)
+		header_opponent_label.add_theme_color_override("font_color", HEADER_TEXT_COLOR)
+	else:
+		header_opponent_label.visible = false
 
 	var player_color: Color = SCORE_COLOR_HIGH if player_points > HIGH_PENALTY_THRESHOLD else SCORE_COLOR_LOW
 	header_player_label.add_theme_color_override("font_color", player_color)
@@ -446,8 +587,20 @@ func _render_hand() -> void:
 
 	var hand := game_state.get_human_hand()
 	var slot_height: float = CARD_HEIGHT + SELECTION_LIFT_PX
+	var count := hand.size()
 
-	for hand_index in range(hand.size()):
+	# Cards always span the full width of PlayerHandArea: spread out evenly
+	# with a gap (positive separation) if they fit at full size, or overlap
+	# evenly (negative separation) if there are too many to fit.
+	var available_width: float = player_hand_area.size.x
+	if available_width <= 0.0:
+		available_width = get_viewport_rect().size.x - HORIZONTAL_MARGIN
+	var separation: float = 0.0
+	if count > 1:
+		separation = (available_width - count * CARD_WIDTH) / float(count - 1)
+	player_hand_area.add_theme_constant_override("separation", roundi(separation))
+
+	for hand_index in range(count):
 		# Each card slot is a plain Control — NOT a Container.
 		# The CardView is positioned inside using anchors + offsets.
 		# Changing offset_top/offset_bottom during animation never touches
@@ -483,16 +636,56 @@ func _render_table() -> void:
 	for child in table_area.get_children():
 		child.queue_free()
 
-	deck_pile_view = _build_deck_pile_view()
+	var can_draw: bool = game_state.is_human_turn() and not game_state.human_has_drawn and not game_state.game_over
+
+	deck_pile_view = _build_deck_pile_view(can_draw)
 	table_area.add_child(deck_pile_view)
 
-	discard_pile_view = _build_discard_pile_view()
+	discard_pile_view = _build_discard_pile_view(can_draw)
 	table_area.add_child(discard_pile_view)
+
+## Wires up `stack` (a deck/discard pile's card stack) so it can be tapped to
+## draw a card while `can_draw` is true: adds a pulsing gold glow behind it
+## and scales up slightly on hover/touch as visual feedback. Outside the draw
+## phase the pile stays purely decorative — no glow, and taps do nothing.
+func _setup_pile_interaction(stack: Control, pile_size: Vector2, can_draw: bool, on_pressed: Callable) -> void:
+	stack.pivot_offset = pile_size * 0.5
+	if not can_draw:
+		return
+
+	var glow := Panel.new()
+	glow.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	glow.set_anchors_preset(Control.PRESET_FULL_RECT)
+	var glow_style := StyleBoxFlat.new()
+	glow_style.bg_color = Color(0.0, 0.0, 0.0, 0.0)
+	glow_style.set_corner_radius_all(8)
+	glow_style.shadow_color = PILE_GLOW_COLOR
+	glow_style.shadow_size = PILE_GLOW_SHADOW_SIZE
+	glow.add_theme_stylebox_override("panel", glow_style)
+	stack.add_child(glow)
+	stack.move_child(glow, 0)
+
+	var pulse := create_tween()
+	pulse.set_loops()
+	pulse.tween_property(glow, "modulate:a", 0.4, 0.6)\
+		.set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
+	pulse.tween_property(glow, "modulate:a", 1.0, 0.6)\
+		.set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
+
+	stack.mouse_filter = Control.MOUSE_FILTER_STOP
+	stack.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
+	stack.gui_input.connect(func(event: InputEvent) -> void:
+		if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
+			on_pressed.call())
+	stack.mouse_entered.connect(func() -> void:
+		create_tween().tween_property(stack, "scale", Vector2.ONE * PILE_HOVER_SCALE, 0.1))
+	stack.mouse_exited.connect(func() -> void:
+		create_tween().tween_property(stack, "scale", Vector2.ONE, 0.1))
 
 ## Builds the deck pile: a title above a stack of face-down CardBack visuals —
 ## two faint, offset "shadow" cards behind a front card that also shows the
 ## remaining card count.
-func _build_deck_pile_view() -> Control:
+func _build_deck_pile_view(can_draw: bool) -> Control:
 	var outer := VBoxContainer.new()
 	outer.alignment = BoxContainer.ALIGNMENT_CENTER
 	outer.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
@@ -502,7 +695,7 @@ func _build_deck_pile_view() -> Control:
 	var title := Label.new()
 	title.text = "Deck"
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	title.add_theme_font_size_override("font_size", 18)
+	title.add_theme_font_size_override("font_size", 22)
 	outer.add_child(title)
 
 	var stack := Control.new()
@@ -517,15 +710,17 @@ func _build_deck_pile_view() -> Control:
 		shadow.size = Vector2(PILE_CARD_WIDTH, PILE_CARD_HEIGHT)
 		shadow.position = Vector2(i, i) * PILE_STACK_OFFSET
 		shadow.modulate = Color(1.0, 1.0, 1.0, 0.5)
+		shadow.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		stack.add_child(shadow)
 
 	var front := CardBack.new()
 	front.size = Vector2(PILE_CARD_WIDTH, PILE_CARD_HEIGHT)
+	front.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	stack.add_child(front)
 
 	var count_label := Label.new()
 	count_label.text = "%d" % game_state.draw_deck.size()
-	count_label.add_theme_font_size_override("font_size", 36)
+	count_label.add_theme_font_size_override("font_size", 44)
 	count_label.add_theme_color_override("font_color", Color.WHITE)
 	count_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	count_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
@@ -533,11 +728,12 @@ func _build_deck_pile_view() -> Control:
 	count_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	front.add_child(count_label)
 
+	_setup_pile_interaction(stack, stack.custom_minimum_size, can_draw, _on_deck_pile_pressed)
 	return outer
 
 ## Builds the discard pile: a title above a stack with the top card shown
 ## fully (correct color/suit via CardView) and faint cream cards behind it.
-func _build_discard_pile_view() -> Control:
+func _build_discard_pile_view(can_draw: bool) -> Control:
 	var outer := VBoxContainer.new()
 	outer.alignment = BoxContainer.ALIGNMENT_CENTER
 	outer.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
@@ -547,7 +743,7 @@ func _build_discard_pile_view() -> Control:
 	var title := Label.new()
 	title.text = "Ablage"
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	title.add_theme_font_size_override("font_size", 18)
+	title.add_theme_font_size_override("font_size", 22)
 	outer.add_child(title)
 
 	var stack := Control.new()
@@ -565,6 +761,7 @@ func _build_discard_pile_view() -> Control:
 			shadow.size = Vector2(PILE_CARD_WIDTH, PILE_CARD_HEIGHT)
 			shadow.position = Vector2(i, i) * PILE_STACK_OFFSET
 			shadow.modulate = Color(1.0, 1.0, 1.0, 0.5)
+			shadow.mouse_filter = Control.MOUSE_FILTER_IGNORE
 			shadow.add_theme_stylebox_override("panel", _build_card_face_style())
 			stack.add_child(shadow)
 
@@ -577,9 +774,11 @@ func _build_discard_pile_view() -> Control:
 	else:
 		var empty := PanelContainer.new()
 		empty.size = Vector2(PILE_CARD_WIDTH, PILE_CARD_HEIGHT)
+		empty.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		empty.add_theme_stylebox_override("panel", _build_card_face_style())
 		stack.add_child(empty)
 
+	_setup_pile_interaction(stack, stack.custom_minimum_size, can_draw and top_card != null, _on_discard_pile_pressed)
 	return outer
 
 ## Plain cream card-face style (#FAFAF0 bg, #CCCCCC border, 8px radius), used
@@ -592,27 +791,161 @@ func _build_card_face_style() -> StyleBoxFlat:
 	style.border_color = CARD_BORDER_COLOR
 	return style
 
-# ── Opponent hand rendering ──────────────────────────────────────────────────
+# ── Opponent area rendering ──────────────────────────────────────────────────
 
-## Renders the opponent's hand as face-down, overlapping cards and updates
-## the card-count badge.
-func _render_opponent_hand() -> void:
-	for child in opponent_hand_area.get_children():
+## Rebuilds the opponent area as 1 or 2 rows of opponent slots, depending on
+## num_opponents:
+##   1 -> [[1]]          one full-width slot
+##   2 -> [[1, 2]]       one row, two compact slots
+##   3 -> [[1, 2], [3]]  two rows, second row has one centered compact slot
+##   4 -> [[1, 2], [3, 4]]  two rows of two compact slots
+func _render_opponent_areas() -> void:
+	for child in opponent_area.get_children():
+		child.queue_free()
+	_opponent_hand_areas.clear()
+
+	var n := game_state.num_opponents
+	var compact := n > 1
+	opponent_area.add_theme_constant_override("separation", int(OPPONENT_ROW_GAP))
+
+	var row_height: float = OPPONENT_ROW_HEIGHT_SINGLE if not compact else OPPONENT_ROW_HEIGHT_COMPACT
+	var num_rows: int = 1 if n <= 2 else 2
+	opponent_area.custom_minimum_size = Vector2(0, num_rows * row_height + (num_rows - 1) * OPPONENT_ROW_GAP)
+
+	var available_width: float = opponent_area.size.x
+	if available_width <= 0.0:
+		available_width = get_viewport_rect().size.x - HORIZONTAL_MARGIN
+	var two_col_width: float = (available_width - OPPONENT_ROW_GAP) / 2.0
+
+	var rows: Array = [[1]]
+	match n:
+		2: rows = [[1, 2]]
+		3: rows = [[1, 2], [3]]
+		4: rows = [[1, 2], [3, 4]]
+
+	for row_bots in rows:
+		var row_box := HBoxContainer.new()
+		row_box.add_theme_constant_override("separation", int(OPPONENT_ROW_GAP))
+		row_box.custom_minimum_size = Vector2(0, row_height)
+		if row_bots.size() == 1 and n != 1:
+			row_box.alignment = BoxContainer.ALIGNMENT_CENTER
+		opponent_area.add_child(row_box)
+
+		for bot_number in row_bots:
+			row_box.add_child(_build_opponent_slot(bot_number, two_col_width, row_height, compact, n))
+
+## Builds one opponent's panel: name + card-count badge header, and a row of
+## face-down cards sized to fill the slot without colliding with neighbors.
+func _build_opponent_slot(bot_number: int, two_col_width: float, row_height: float, compact: bool, n: int) -> PanelContainer:
+	var player_index := bot_number
+
+	var panel := PanelContainer.new()
+	panel.clip_contents = true
+	if n == 1:
+		panel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	else:
+		panel.custom_minimum_size = Vector2(two_col_width, row_height)
+		panel.size_flags_horizontal = Control.SIZE_SHRINK_CENTER if (n == 3 and bot_number == 3) else Control.SIZE_FILL
+	panel.custom_minimum_size.y = row_height
+
+	var style := StyleBoxFlat.new()
+	style.bg_color = COLOR_PANEL_BG
+	style.set_corner_radius_all(8)
+	style.set_content_margin_all(8 if compact else 10)
+	if game_state.current_player_index == player_index and not game_state.game_over:
+		style.border_color = OPPONENT_ACTIVE_BORDER_COLOR
+		style.set_border_width_all(OPPONENT_ACTIVE_BORDER_WIDTH)
+	panel.add_theme_stylebox_override("panel", style)
+
+	var vbox := VBoxContainer.new()
+	vbox.add_theme_constant_override("separation", 2)
+	panel.add_child(vbox)
+
+	var header := HBoxContainer.new()
+	header.add_theme_constant_override("separation", 8)
+	vbox.add_child(header)
+
+	var name_label := Label.new()
+	name_label.text = game_state.get_player_name(player_index)
+	name_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	name_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	name_label.add_theme_font_size_override("font_size",
+		OPPONENT_NAME_FONT_SIZE_SINGLE if not compact else OPPONENT_NAME_FONT_SIZE_COMPACT)
+	header.add_child(name_label)
+
+	var badge_size: float = OPPONENT_BADGE_SIZE_SINGLE if not compact else OPPONENT_BADGE_SIZE_COMPACT
+	var badge := PanelContainer.new()
+	badge.custom_minimum_size = Vector2(badge_size, badge_size)
+	badge.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	var badge_style := StyleBoxFlat.new()
+	badge_style.bg_color = Color(0.8, 0.2, 0.2)
+	badge_style.set_corner_radius_all(int(badge_size / 2.0))
+	badge.add_theme_stylebox_override("panel", badge_style)
+	header.add_child(badge)
+
+	var badge_label := Label.new()
+	badge_label.text = "%d" % game_state.get_player_hand_count(player_index)
+	badge_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	badge_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	badge_label.add_theme_font_size_override("font_size",
+		OPPONENT_BADGE_FONT_SIZE_SINGLE if not compact else OPPONENT_BADGE_FONT_SIZE_COMPACT)
+	badge.add_child(badge_label)
+
+	var hand_area := HBoxContainer.new()
+	hand_area.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	vbox.add_child(hand_area)
+
+	var slot_width: float = two_col_width if n != 1 else (get_viewport_rect().size.x - HORIZONTAL_MARGIN)
+	_fill_opponent_hand_area(hand_area, player_index, slot_width, compact)
+
+	while _opponent_hand_areas.size() < bot_number:
+		_opponent_hand_areas.append(null)
+	_opponent_hand_areas[bot_number - 1] = hand_area
+
+	return panel
+
+## Fills hand_area with one face-down card per card in player_index's hand,
+## spreading them across slot_width (or overlapping, down to a min separation,
+## if there are too many to fit at full size).
+func _fill_opponent_hand_area(hand_area: Control, player_index: int, slot_width: float, compact: bool) -> void:
+	for child in hand_area.get_children():
 		child.queue_free()
 
-	var count: int = game_state.bot_player.hand.size()
-	opponent_badge_label.text = "%d" % count
+	var card_w: float = OPPONENT_CARD_WIDTH_COMPACT if compact else OPPONENT_CARD_WIDTH_SINGLE
+	var card_h: float = OPPONENT_CARD_HEIGHT_COMPACT if compact else OPPONENT_CARD_HEIGHT_SINGLE
+	var min_sep: float = OPPONENT_CARD_MIN_SEPARATION_COMPACT if compact else OPPONENT_CARD_MIN_SEPARATION_SINGLE
+	var slot_padding: float = 16.0 if compact else 20.0 # 2x panel content margin
+	var available: float = slot_width - slot_padding
+
+	var count := game_state.get_player_hand_count(player_index)
+	var separation: float = 0.0
+	if count > 1:
+		separation = maxf((available - count * card_w) / float(count - 1), min_sep)
+	hand_area.add_theme_constant_override("separation", roundi(separation))
 
 	for _i in range(count):
-		opponent_hand_area.add_child(_build_card_back())
+		hand_area.add_child(_build_card_back(Vector2(card_w, card_h)))
 
-## Builds a small face-down card visual (used for the opponent's hand and for
+## Builds a small face-down card visual (used for opponent hand rows and for
 ## the bot draw/discard flying-card animation).
-func _build_card_back(card_size: Vector2 = Vector2(OPPONENT_CARD_WIDTH, OPPONENT_CARD_HEIGHT)) -> Control:
+func _build_card_back(card_size: Vector2 = Vector2(OPPONENT_CARD_WIDTH_SINGLE, OPPONENT_CARD_HEIGHT_SINGLE)) -> Control:
 	var back := CardBack.new()
 	back.custom_minimum_size = card_size
 	back.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	return back
+
+## Returns the global anchor point (right edge, vertical center) of the given
+## bot's hand area, for the flying-card animation. Falls back to the screen
+## center if the slot hasn't been built yet.
+func _get_opponent_anchor(player_index: int) -> Vector2:
+	var idx := player_index - 1
+	if idx < 0 or idx >= _opponent_hand_areas.size():
+		return get_viewport_rect().size * 0.5
+	var hand_area := _opponent_hand_areas[idx]
+	if hand_area == null or not is_instance_valid(hand_area):
+		return get_viewport_rect().size * 0.5
+	var rect := hand_area.get_global_rect()
+	return rect.position + Vector2(rect.size.x, rect.size.y * 0.5)
 
 # ── Bot turn animation ────────────────────────────────────────────────────────
 
@@ -620,9 +953,8 @@ func _build_card_back(card_size: Vector2 = Vector2(OPPONENT_CARD_WIDTH, OPPONENT
 ## fades out, then frees itself. Purely decorative — game state is already
 ## updated by the time this plays.
 func _spawn_flying_card(from_global: Vector2, to_global: Vector2) -> void:
-	var card := _build_card_back()
-	card.custom_minimum_size = Vector2(OPPONENT_CARD_WIDTH, OPPONENT_CARD_HEIGHT)
-	card.size = Vector2(OPPONENT_CARD_WIDTH, OPPONENT_CARD_HEIGHT)
+	var card := _build_card_back(FLYING_CARD_SIZE)
+	card.size = FLYING_CARD_SIZE
 	card.z_index = 100
 	add_child(card)
 	card.global_position = from_global
@@ -632,22 +964,6 @@ func _spawn_flying_card(from_global: Vector2, to_global: Vector2) -> void:
 		.set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN_OUT)
 	tween.parallel().tween_property(card, "modulate:a", 0.0, 0.15).set_delay(0.1)
 	tween.tween_callback(card.queue_free)
-
-## Plays the "bot draws a card" and "bot discards a card" flying animations.
-## Captures positions of the deck pile, opponent hand, and discard pile
-## BEFORE the state-changing call so the old (still valid) layout rects can
-## be used as animation endpoints.
-func _animate_bot_turn(deck_rect: Rect2, opponent_anchor: Vector2, discard_rect: Rect2) -> void:
-	var deck_pos := deck_rect.position + deck_rect.size * 0.5 - Vector2(OPPONENT_CARD_WIDTH, OPPONENT_CARD_HEIGHT) * 0.5
-	var opponent_pos := opponent_anchor - Vector2(OPPONENT_CARD_WIDTH, OPPONENT_CARD_HEIGHT) * 0.5
-	var discard_pos := discard_rect.position + discard_rect.size * 0.5 - Vector2(OPPONENT_CARD_WIDTH, OPPONENT_CARD_HEIGHT) * 0.5
-
-	_spawn_flying_card(deck_pos, opponent_pos)
-
-	var discard_tween := get_tree().create_timer(0.2)
-	discard_tween.timeout.connect(func() -> void:
-		_spawn_flying_card(opponent_pos, discard_pos)
-	)
 
 # ── Tisch (table melds) rendering ────────────────────────────────────────────
 
