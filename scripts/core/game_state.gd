@@ -24,9 +24,17 @@ const HUMAN_INDEX := 0
 const MIN_OPPONENTS := 1
 const MAX_OPPONENTS := 4
 
+## Increased from the standard 2 for easier manual testing of joker behavior.
+const DEFAULT_JOKER_COUNT := 6
+const MAX_JOKER_COUNT := 8
+
 ## players[0] is the human, players[1..num_opponents] are bots.
 var players: Array[Player] = []
 var num_opponents: int = 1
+
+## Number of jokers added to the deck for new_game(). Configurable via the
+## options overlay before starting the next round.
+var joker_count: int = DEFAULT_JOKER_COUNT
 
 var draw_deck: Deck
 var discard_pile: Array[Card] = []
@@ -61,7 +69,7 @@ func new_game(p_num_opponents: int = num_opponents) -> void:
 		players.append(Player.new("Gegner %d" % i))
 
 	draw_deck = Deck.new()
-	draw_deck.build_standard_deck()
+	draw_deck.build_standard_deck(joker_count)
 	draw_deck.shuffle_deck()
 	discard_pile.clear()
 	table_melds.clear()
@@ -195,7 +203,7 @@ func human_lay_meld(indices: Array[int]) -> bool:
 			return false
 
 	_remove_cards_by_indices(players[HUMAN_INDEX], indices)
-	table_melds.append({"owner": HUMAN_INDEX, "cards": selected})
+	table_melds.append({"owner": HUMAN_INDEX, "cards": RummyRules.order_meld_cards(selected)})
 	human_has_melded = true
 
 	if _check_game_over():
@@ -241,11 +249,57 @@ func human_extend_meld(meld_index: int, card_indices: Array[int]) -> bool:
 		return false
 
 	_remove_cards_by_indices(players[HUMAN_INDEX], card_indices)
-	meld_entry["cards"] = combined
+	meld_entry["cards"] = RummyRules.order_meld_cards(combined)
 
 	if _check_game_over():
 		return true
 	status_text = "Erfolgreich angelegt!"
+	return true
+
+## Exchanges the joker in the table meld at meld_index for the matching real
+## card from the human's hand: the real card takes the joker's place on the
+## table, and the joker moves to the human's hand — usable freely afterwards,
+## as if drawn from the deck. Requires the human's first meld to be laid.
+func human_swap_joker(meld_index: int, hand_index: int) -> bool:
+	if not _assert_human_action_allowed():
+		return false
+	if not human_has_melded:
+		status_text = "Joker-Tausch erst nach deiner Erstmeldung möglich."
+		return false
+	if meld_index < 0 or meld_index >= table_melds.size():
+		status_text = "Ungültige Meldung."
+		return false
+
+	var human_hand := players[HUMAN_INDEX].hand
+	if hand_index < 0 or hand_index >= human_hand.size():
+		status_text = "Ungültige Kartenauswahl."
+		return false
+
+	var meld_entry: Dictionary = table_melds[meld_index]
+	var cards: Array = meld_entry["cards"]
+	var hand_card: Card = human_hand[hand_index]
+
+	if not RummyRules.is_joker_swap_match(cards, hand_card):
+		status_text = "Diese Karte passt nicht auf den Joker."
+		return false
+
+	var joker_index := -1
+	for i in range(cards.size()):
+		if cards[i].is_joker:
+			joker_index = i
+			break
+	if joker_index == -1:
+		status_text = "Kein Joker in dieser Meldung."
+		return false
+
+	var joker: Card = cards[joker_index]
+	cards[joker_index] = hand_card
+	players[HUMAN_INDEX].remove_card_at(hand_index)
+	players[HUMAN_INDEX].add_card(joker)
+	players[HUMAN_INDEX].sort_hand()
+	meld_entry["cards"] = RummyRules.order_meld_cards(cards)
+
+	status_text = "Du hast den Joker gegen %s getauscht." % hand_card.to_display_string()
 	return true
 
 # ── Discard ───────────────────────────────────────────────────────────────────
@@ -271,6 +325,19 @@ func human_discard_card(hand_index: int) -> bool:
 
 func human_sort_hand() -> void:
 	players[HUMAN_INDEX].sort_hand()
+
+## Moves the card at from_index to to_index within the human's hand (used by
+## drag-and-drop reordering in the UI). No turn/phase checks — purely
+## cosmetic reordering, allowed any time.
+func human_reorder_hand(from_index: int, to_index: int) -> void:
+	var hand := players[HUMAN_INDEX].hand
+	if from_index < 0 or from_index >= hand.size():
+		return
+	to_index = clampi(to_index, 0, hand.size() - 1)
+	if from_index == to_index:
+		return
+	var card: Card = hand.pop_at(from_index)
+	hand.insert(to_index, card)
 
 # ── Turn advancement ──────────────────────────────────────────────────────────
 
@@ -312,7 +379,7 @@ func bot_meld_step() -> Dictionary:
 			continue
 
 		_remove_cards_by_indices(players[bot_idx], indices)
-		table_melds.append({"owner": bot_idx, "cards": cards})
+		table_melds.append({"owner": bot_idx, "cards": RummyRules.order_meld_cards(cards)})
 		bot_has_melded[bot_idx - 1] = true
 		return {"laid": true}
 
@@ -333,7 +400,7 @@ func bot_extend_step() -> Dictionary:
 			var combined: Array = existing.duplicate()
 			combined.append(card)
 			if RummyRules.is_valid_group(combined) or RummyRules.is_valid_run(combined):
-				meld_entry["cards"] = combined
+				meld_entry["cards"] = RummyRules.order_meld_cards(combined)
 				players[bot_idx].remove_card_at(hand_index)
 				return {"extended": true, "card": card}
 
@@ -550,6 +617,7 @@ func to_dict() -> Dictionary:
 		"winner_index": winner_index,
 		"status_text": status_text,
 		"round_number": round_number,
+		"joker_count": joker_count,
 	}
 
 func from_dict(data: Dictionary) -> void:
@@ -584,3 +652,4 @@ func from_dict(data: Dictionary) -> void:
 	winner_index = data.get("winner_index", -1)
 	status_text = data.get("status_text", "")
 	round_number = data.get("round_number", round_number)
+	joker_count = data.get("joker_count", joker_count)

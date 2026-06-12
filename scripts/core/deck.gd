@@ -5,14 +5,17 @@ extends RefCounted
 
 var cards: Array[Card] = []
 
-## Replaces the contents with two standard 52-card decks (104 cards, no jokers), unshuffled.
-func build_standard_deck() -> void:
+## Replaces the contents with two standard 52-card decks (104 cards) plus
+## joker_count jokers, unshuffled.
+func build_standard_deck(joker_count: int = 2) -> void:
 	cards.clear()
 	var suits := [Card.Suit.HEARTS, Card.Suit.DIAMONDS, Card.Suit.CLUBS, Card.Suit.SPADES]
 	for _i in range(2):
 		for suit in suits:
 			for rank in range(1, 14):
 				cards.append(Card.new(suit, rank))
+	for _i in range(joker_count):
+		cards.append(Card.new(Card.Suit.HEARTS, 1, true))
 
 func shuffle_deck() -> void:
 	cards.shuffle()

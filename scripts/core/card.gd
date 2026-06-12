@@ -28,7 +28,7 @@ const SUIT_NAMES := {
 
 var suit: Suit
 var rank: int # 1-13, ace is 1 (low)
-var is_joker: bool # Reserved for future use; jokers are not dealt yet.
+var is_joker: bool
 
 func _init(p_suit: Suit = Suit.HEARTS, p_rank: int = 1, p_is_joker: bool = false) -> void:
 	suit = p_suit

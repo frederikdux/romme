@@ -19,11 +19,16 @@ func remove_card_at(hand_index: int) -> Card:
 		return null
 	return hand.pop_at(hand_index)
 
-## Sorts the hand by suit first, then by rank within each suit.
+## Sorts the hand by suit first, then by rank within each suit. Jokers always
+## sort to the end.
 func sort_hand() -> void:
 	hand.sort_custom(_compare_cards)
 
 func _compare_cards(a: Card, b: Card) -> bool:
+	if a.is_joker != b.is_joker:
+		return not a.is_joker
+	if a.is_joker:
+		return false
 	if a.suit != b.suit:
 		return a.suit < b.suit
 	return a.rank < b.rank

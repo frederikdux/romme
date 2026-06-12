@@ -94,6 +94,34 @@ const PILE_GLOW_COLOR := Color(1.0, 0.85, 0.2) # gold
 const PILE_GLOW_SHADOW_SIZE := 18
 const PILE_HOVER_SCALE := 1.08
 
+## Drag & drop tuning. The dragged card scales up and lifts slightly so it
+## visually separates from the hand; other cards in the hand re-flow toward
+## their preview position with a short tween (DRAG_REORDER_TWEEN_SEC).
+const DRAG_SCALE := 1.12
+const DRAG_LIFT_PX := 20.0
+const DRAG_REORDER_TWEEN_SEC := 0.08
+## Opacity applied to the other cards of a multi-card selection while one of
+## them is being dragged, to show they're moving together.
+const DRAG_GROUP_DIM_ALPHA := 0.4
+## Border shown around a table meld / the Tisch area while a card is dragged
+## over it: green if dropping there would be a valid action, red otherwise.
+const DROP_VALID_COLOR := Color(0.2, 0.9, 0.2)
+const DROP_INVALID_COLOR := Color(0.9, 0.2, 0.2)
+const DROP_HIGHLIGHT_BORDER_WIDTH := 4
+## Duration of the flying-card animation when the human draws a card.
+const NEW_CARD_FLY_DURATION := 0.3
+
+## Pulsing glow applied to a table joker that the currently-selected hand card
+## could be swapped for (Joker-Tausch), and the brief red flash shown when an
+## ineligible table joker is tapped.
+const JOKER_SWAP_PULSE_COLOR := Color(0.5, 1.6, 0.5)
+const JOKER_SWAP_PULSE_DURATION := 0.4
+const JOKER_SWAP_INVALID_FLASH_SEC := 0.2
+
+## Drop-target highlight states applied to a table meld button or the Tisch
+## area while a card/group is being dragged over it.
+enum DropHighlight { NONE, VALID, INVALID }
+
 ## Action button accent colors.
 const COLOR_ACCENT_BLUE := Color(0.129, 0.588, 0.953) # #2196F3
 const COLOR_GREEN := Color(0.298, 0.686, 0.314) # #4CAF50
@@ -120,6 +148,49 @@ var selected_meld_index: int = -1
 ## CardView references for each hand slot — rebuilt by _render_hand.
 ## Used to animate offset_top/offset_bottom without touching layout minimum sizes.
 var _card_views: Array[CardView] = []
+## Slot Controls wrapping each hand CardView, in the same order as
+## _card_views — rebuilt by _render_hand. Used to read slot geometry for
+## drag-and-drop math.
+var _card_slots: Array[Control] = []
+## Horizontal distance (px) between two adjacent hand slots' positions
+## (CARD_WIDTH + separation) — recomputed by _render_hand, used by the drag
+## "make way" preview.
+var _drag_hand_step: float = 0.0
+## Button references for each rendered table meld, in table_melds order —
+## rebuilt by _render_tisch. Used to apply drag-hover highlight styles
+## without a full rebuild.
+var _meld_buttons: Array[Button] = []
+
+## Precomputed TischArea panel styles, swapped during drag-over highlighting.
+var _tisch_style_normal: StyleBoxFlat
+var _tisch_style_valid: StyleBoxFlat
+var _tisch_style_invalid: StyleBoxFlat
+
+## Full-rect overlay (added last, on top of everything) that hosts the
+## floating drag preview and the new-card flying animation.
+var _drag_layer: Control
+
+## Drag state — see _on_card_drag_started/_on_card_dragged/_on_card_drag_ended.
+var _drag_active: bool = false
+var _drag_card_view: CardView
+var _drag_badge: PanelContainer
+var _drag_from_index: int = -1
+## All hand indices moving together (the dragged card, plus any other
+## selected cards if the dragged card was part of the selection).
+var _drag_indices: Array[int] = []
+## Current "make way" preview target slot (hand reorder only).
+var _drag_target_slot: int = -1
+## Index into table_melds currently highlighted as a drop target, or -1.
+var _drag_hover_meld_index: int = -1
+## True while hovering the Tisch area outside any specific meld (i.e. the
+## "lay a new meld" drop target).
+var _drag_hover_table: bool = false
+## Whether the currently highlighted meld/table drop target would accept the
+## dragged cards (drives the green/red border and the action on drop).
+var _drag_hover_valid: bool = false
+## Tween animating the FLIP "make way" preview offsets; killed and replaced
+## whenever the preview target slot changes.
+var _drag_reorder_tween: Tween
 
 var background_rect: ColorRect
 var header_player_label: Label
@@ -154,6 +225,13 @@ var opponents_1_button: Button
 var opponents_2_button: Button
 var opponents_3_button: Button
 var opponents_4_button: Button
+var options_button: Button
+var options_overlay: Control
+var options_overlay_bg: Control
+var options_back_button: Button
+var joker_count_value_label: Label
+var joker_count_minus_button: Button
+var joker_count_plus_button: Button
 ## Re-entrancy guard for _run_bot_turn_sequence().
 var _bot_turn_in_progress: bool = false
 
@@ -190,6 +268,13 @@ func _ready() -> void:
 	opponents_2_button = _require_node("Opponents2Button") as Button
 	opponents_3_button = _require_node("Opponents3Button") as Button
 	opponents_4_button = _require_node("Opponents4Button") as Button
+	options_button = _require_node("OptionsButton") as Button
+	options_overlay = _require_node("OptionsOverlay") as Control
+	options_overlay_bg = _require_node("OptionsOverlayBg") as Control
+	options_back_button = _require_node("OptionsBackButton") as Button
+	joker_count_value_label = _require_node("JokerCountValueLabel") as Label
+	joker_count_minus_button = _require_node("JokerCountMinusButton") as Button
+	joker_count_plus_button = _require_node("JokerCountPlusButton") as Button
 
 	meldung_legen_button.pressed.connect(_on_meldung_legen_pressed)
 	anlegen_button.pressed.connect(_on_anlegen_pressed)
@@ -201,6 +286,10 @@ func _ready() -> void:
 	opponents_2_button.pressed.connect(_on_opponent_count_selected.bind(2))
 	opponents_3_button.pressed.connect(_on_opponent_count_selected.bind(3))
 	opponents_4_button.pressed.connect(_on_opponent_count_selected.bind(4))
+	options_button.pressed.connect(_on_options_pressed)
+	options_back_button.pressed.connect(_on_options_back_pressed)
+	joker_count_minus_button.pressed.connect(_on_joker_count_step.bind(-1))
+	joker_count_plus_button.pressed.connect(_on_joker_count_step.bind(1))
 
 	background_rect.color = COLOR_BACKGROUND
 	background_rect.mouse_filter = Control.MOUSE_FILTER_STOP
@@ -209,11 +298,22 @@ func _ready() -> void:
 	menu_overlay_bg.mouse_filter = Control.MOUSE_FILTER_STOP
 	menu_overlay_bg.gui_input.connect(_on_menu_overlay_bg_gui_input)
 
+	options_overlay_bg.mouse_filter = Control.MOUSE_FILTER_STOP
+	options_overlay_bg.gui_input.connect(_on_options_overlay_bg_gui_input)
+
 	var tisch_style: StyleBoxFlat = StyleBoxFlat.new()
 	tisch_style.bg_color = COLOR_TISCH_BG
 	tisch_style.set_corner_radius_all(8)
 	tisch_style.set_content_margin_all(10)
 	tisch_area.add_theme_stylebox_override("panel", tisch_style)
+
+	_tisch_style_normal = tisch_style
+	_tisch_style_valid = tisch_style.duplicate()
+	_tisch_style_valid.border_color = DROP_VALID_COLOR
+	_tisch_style_valid.set_border_width_all(DROP_HIGHLIGHT_BORDER_WIDTH)
+	_tisch_style_invalid = tisch_style.duplicate()
+	_tisch_style_invalid.border_color = DROP_INVALID_COLOR
+	_tisch_style_invalid.set_border_width_all(DROP_HIGHLIGHT_BORDER_WIDTH)
 
 	var menu_panel_style: StyleBoxFlat = StyleBoxFlat.new()
 	menu_panel_style.bg_color = COLOR_PANEL_BG
@@ -230,6 +330,17 @@ func _ready() -> void:
 	_style_button(opponents_2_button, COLOR_ACCENT_BLUE)
 	_style_button(opponents_3_button, COLOR_ACCENT_BLUE)
 	_style_button(opponents_4_button, COLOR_ACCENT_BLUE)
+	_style_button(options_button, COLOR_GREY_NEUTRAL)
+	_style_button(options_back_button, COLOR_GREY_NEUTRAL)
+	_style_button(joker_count_minus_button, COLOR_ACCENT_BLUE)
+	_style_button(joker_count_plus_button, COLOR_ACCENT_BLUE)
+	(_require_node("OptionsPanel") as PanelContainer).add_theme_stylebox_override("panel", menu_panel_style.duplicate())
+
+	_drag_layer = Control.new()
+	_drag_layer.name = &"DragLayer"
+	_drag_layer.set_anchors_preset(Control.PRESET_FULL_RECT)
+	_drag_layer.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	add_child(_drag_layer)
 
 	game_state = GameState.new()
 	setup_overlay.visible = true
@@ -271,13 +382,60 @@ func _on_abwerfen_pressed() -> void:
 
 func _on_deck_pile_pressed() -> void:
 	_clear_selection()
-	game_state.human_draw_from_deck()
+	var from_rect := _pile_card_rect(deck_pile_view)
+	var drew := game_state.human_draw_from_deck()
 	_refresh_ui()
+	if drew:
+		_animate_drawn_card(from_rect)
 
 func _on_discard_pile_pressed() -> void:
 	_clear_selection()
-	game_state.human_draw_from_discard()
+	var from_rect := _pile_card_rect(discard_pile_view)
+	var drew := game_state.human_draw_from_discard()
 	_refresh_ui()
+	if drew:
+		_animate_drawn_card(from_rect)
+
+## Returns a CARD_WIDTH x CARD_HEIGHT rect centered on the given pile view,
+## used as the start/end point for the drawn-card flight animation.
+func _pile_card_rect(pile_view: Control) -> Rect2:
+	var pile_rect := pile_view.get_global_rect()
+	var card_size := Vector2(CARD_WIDTH, CARD_HEIGHT)
+	return Rect2(pile_rect.position + pile_rect.size * 0.5 - card_size * 0.5, card_size)
+
+## Animates the just-drawn card (always the last hand card, since
+## Player.add_card appends) flying from from_rect to its new hand slot, then
+## flashes it to draw attention. Called after _refresh_ui() has rebuilt the
+## hand with the new card.
+func _animate_drawn_card(from_rect: Rect2) -> void:
+	if _card_views.is_empty():
+		return
+	var new_view: CardView = _card_views.back()
+	if not is_instance_valid(new_view):
+		return
+
+	var to_rect := new_view.get_global_rect()
+	new_view.modulate.a = 0.0
+
+	var flying := CardViewScene.instantiate() as CardView
+	flying.setup(new_view.card, -1)
+	flying.disabled = true
+	flying.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_drag_layer.add_child(flying)
+	flying.global_position = from_rect.position
+	flying.size = from_rect.size
+
+	var tween := create_tween()
+	tween.set_parallel(true)
+	tween.tween_property(flying, "global_position", to_rect.position, NEW_CARD_FLY_DURATION)\
+		.set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN_OUT)
+	tween.tween_property(flying, "size", to_rect.size, NEW_CARD_FLY_DURATION)\
+		.set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN_OUT)
+	tween.chain().tween_callback(func() -> void:
+		flying.queue_free()
+		if is_instance_valid(new_view):
+			new_view.modulate.a = 1.0
+			new_view.flash_highlight())
 
 # ── Bot turn ──────────────────────────────────────────────────────────────────
 
@@ -377,6 +535,30 @@ func _on_opponent_count_selected(count: int) -> void:
 	game_state.new_game(count)
 	_refresh_ui()
 
+# ── Options overlay ───────────────────────────────────────────────────────────
+
+func _on_options_pressed() -> void:
+	setup_overlay.visible = false
+	options_overlay.visible = true
+	_render_joker_count_label()
+
+func _on_options_back_pressed() -> void:
+	options_overlay.visible = false
+	setup_overlay.visible = true
+
+func _on_options_overlay_bg_gui_input(event: InputEvent) -> void:
+	if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
+		_on_options_back_pressed()
+
+## Adjusts game_state.joker_count by delta, clamped to
+## [0, GameState.MAX_JOKER_COUNT], and refreshes the value label.
+func _on_joker_count_step(delta: int) -> void:
+	game_state.joker_count = clampi(game_state.joker_count + delta, 0, GameState.MAX_JOKER_COUNT)
+	_render_joker_count_label()
+
+func _render_joker_count_label() -> void:
+	joker_count_value_label.text = str(game_state.joker_count)
+
 ## Toggles selection of a table meld (click to select, click again to deselect).
 func _on_meld_tapped(meld_index: int) -> void:
 	selected_meld_index = -1 if selected_meld_index == meld_index else meld_index
@@ -397,6 +579,7 @@ func _on_card_toggled(hand_index: int, selected: bool) -> void:
 	_animate_card_lift(hand_index, selected)
 	_update_action_buttons()
 	_render_phase_indicator()
+	_render_tisch()
 
 ## Animates a card up/down by tweening offset_top and offset_bottom on the
 ## CardView. Crucially: this never changes any node's custom_minimum_size, so
@@ -434,6 +617,256 @@ func _deselect_all() -> void:
 	_update_action_buttons()
 	_render_phase_indicator()
 	_render_tisch()
+
+# ── Hand drag & drop ─────────────────────────────────────────────────────────
+
+## Called when a hand card's press moves past the drag threshold. Determines
+## which cards move together (the dragged card alone, or its whole selection
+## group if it was selected), dims the other moving cards, and lifts the
+## dragged CardView into _drag_layer so it floats above everything else.
+func _on_card_drag_started(hand_index: int) -> void:
+	if hand_index < 0 or hand_index >= _card_views.size():
+		return
+	var card_view := _card_views[hand_index]
+	if not is_instance_valid(card_view):
+		return
+
+	_drag_active = true
+	_drag_from_index = hand_index
+	_drag_target_slot = hand_index
+	_drag_hover_meld_index = -1
+	_drag_hover_table = false
+	_drag_hover_valid = false
+
+	if selected_card_indices.has(hand_index):
+		_drag_indices = selected_card_indices.duplicate()
+	else:
+		_drag_indices = [hand_index]
+
+	for i in _drag_indices:
+		if i != hand_index and i >= 0 and i < _card_views.size() and is_instance_valid(_card_views[i]):
+			_card_views[i].modulate.a = DRAG_GROUP_DIM_ALPHA
+
+	# The dragged CardView stays in its slot (just hidden) so it keeps the
+	# mouse-press grab that's driving this drag — reparenting the pressed
+	# Control mid-gesture breaks Godot's gui_input capture and "loses" the
+	# drag. A separate, input-ignoring ghost CardView in _drag_layer provides
+	# the floating preview instead.
+	var rect := card_view.get_global_rect()
+	card_view.modulate.a = 0.0
+
+	var ghost := CardViewScene.instantiate() as CardView
+	ghost.setup(card_view.card, -1)
+	ghost.disabled = true
+	ghost.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	if card_view.is_selected:
+		ghost.set_selected(true)
+	_drag_layer.add_child(ghost)
+	ghost.global_position = rect.position - Vector2(0.0, DRAG_LIFT_PX)
+	ghost.size = rect.size
+	ghost.pivot_offset = rect.size * 0.5
+	_drag_card_view = ghost
+
+	var tween := create_tween()
+	tween.tween_property(ghost, "scale", Vector2.ONE * DRAG_SCALE, 0.06)\
+		.set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+
+	if _drag_indices.size() > 1:
+		_drag_badge = PanelContainer.new()
+		_drag_badge.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		var badge_style := StyleBoxFlat.new()
+		badge_style.bg_color = COLOR_RED
+		badge_style.set_corner_radius_all(10)
+		_drag_badge.add_theme_stylebox_override("panel", badge_style)
+		_drag_badge.anchor_left = 1.0
+		_drag_badge.anchor_right = 1.0
+		_drag_badge.offset_left = -34.0
+		_drag_badge.offset_right = -2.0
+		_drag_badge.offset_top = -10.0
+		_drag_badge.offset_bottom = 18.0
+
+		var badge_label := Label.new()
+		badge_label.text = "+%d" % (_drag_indices.size() - 1)
+		badge_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		badge_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		badge_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+		badge_label.add_theme_font_size_override("font_size", 22)
+		badge_label.add_theme_color_override("font_color", Color.WHITE)
+		_drag_badge.add_child(badge_label)
+
+		ghost.add_child(_drag_badge)
+
+## Updates the floating drag preview's position to follow the pointer, applies
+## green/red drop-target highlighting on hovered melds/the Tisch area, and (for
+## single-card drags) re-runs the FLIP "make way" preview for hand reordering.
+func _on_card_dragged(hand_index: int, global_pos: Vector2) -> void:
+	if not _drag_active or _drag_card_view == null or not is_instance_valid(_drag_card_view):
+		return
+
+	_drag_card_view.global_position = global_pos - _drag_card_view.size * 0.5 - Vector2(0.0, DRAG_LIFT_PX)
+
+	var hand := game_state.get_human_hand()
+	var drag_cards: Array = []
+	for i in _drag_indices:
+		drag_cards.append(hand[i])
+
+	var hovered_meld_index := -1
+	for i in range(_meld_buttons.size()):
+		var btn := _meld_buttons[i]
+		if is_instance_valid(btn) and btn.get_global_rect().has_point(global_pos):
+			hovered_meld_index = i
+			break
+
+	var hovered_table := hovered_meld_index < 0 and tisch_area.get_global_rect().has_point(global_pos)
+
+	if hovered_meld_index != _drag_hover_meld_index or hovered_table != _drag_hover_table:
+		_clear_drag_hover()
+		_drag_hover_meld_index = hovered_meld_index
+		_drag_hover_table = hovered_table
+
+		if hovered_meld_index >= 0:
+			var meld_entry: Dictionary = game_state.table_melds[hovered_meld_index]
+			var combined: Array = []
+			for c in meld_entry.get("cards", []):
+				combined.append(c)
+			for c in drag_cards:
+				combined.append(c)
+			_drag_hover_valid = (game_state.human_has_melded and game_state.is_human_turn()
+				and game_state.human_has_drawn and not game_state.game_over
+				and (RummyRules.is_valid_group(combined) or RummyRules.is_valid_run(combined)))
+			_set_meld_drop_highlight(hovered_meld_index,
+				DropHighlight.VALID if _drag_hover_valid else DropHighlight.INVALID)
+		elif hovered_table:
+			_drag_hover_valid = (_drag_indices.size() >= 3 and game_state.is_human_turn()
+				and game_state.human_has_drawn and not game_state.game_over
+				and (RummyRules.is_valid_group(drag_cards) or RummyRules.is_valid_run(drag_cards))
+				and (game_state.human_has_melded
+					or RummyRules.meld_score(drag_cards) >= GameState.FIRST_MELD_MIN_POINTS))
+			_set_tisch_drop_highlight(DropHighlight.VALID if _drag_hover_valid else DropHighlight.INVALID)
+		else:
+			_drag_hover_valid = false
+
+	if _drag_indices.size() == 1:
+		var target_slot := _drag_from_index
+		if hovered_meld_index < 0 and not hovered_table and player_hand_area.get_global_rect().has_point(global_pos):
+			var local_x := global_pos.x - player_hand_area.get_global_rect().position.x
+			var count := _card_views.size()
+			target_slot = clampi(roundi((local_x - CARD_WIDTH * 0.5) / maxf(_drag_hand_step, 1.0)), 0, count - 1)
+		_update_hand_reorder_preview(target_slot)
+
+## Recomputes and animates the "make way" FLIP offsets for every other hand
+## card so they smoothly shift toward the slots they'd occupy if the dragged
+## card (single-card drags only) were dropped at target_slot.
+func _update_hand_reorder_preview(target_slot: int) -> void:
+	if target_slot == _drag_target_slot:
+		return
+	_drag_target_slot = target_slot
+
+	if _drag_reorder_tween != null and _drag_reorder_tween.is_valid():
+		_drag_reorder_tween.kill()
+
+	var count := _card_views.size()
+	var order: Array[int] = []
+	for h in range(count):
+		if h != _drag_from_index:
+			order.append(h)
+	order.insert(clampi(target_slot, 0, order.size()), _drag_from_index)
+
+	_drag_reorder_tween = create_tween()
+	_drag_reorder_tween.set_parallel(true)
+	for h in range(count):
+		if h == _drag_from_index:
+			continue
+		var card_view := _card_views[h]
+		if not is_instance_valid(card_view):
+			continue
+		var delta := float(order.find(h) - h) * _drag_hand_step
+		_drag_reorder_tween.tween_property(card_view, "offset_left", delta, DRAG_REORDER_TWEEN_SEC)\
+			.set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+		_drag_reorder_tween.tween_property(card_view, "offset_right", delta, DRAG_REORDER_TWEEN_SEC)\
+			.set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+
+## Resets any meld/Tisch drop-highlight back to normal.
+func _clear_drag_hover() -> void:
+	if _drag_hover_meld_index >= 0:
+		_set_meld_drop_highlight(_drag_hover_meld_index, DropHighlight.NONE)
+	if _drag_hover_table:
+		_set_tisch_drop_highlight(DropHighlight.NONE)
+
+## Swaps the Tisch area's panel style between normal and the precomputed
+## green/red drop-highlight variants.
+func _set_tisch_drop_highlight(state: DropHighlight) -> void:
+	var style := _tisch_style_normal
+	if state == DropHighlight.VALID:
+		style = _tisch_style_valid
+	elif state == DropHighlight.INVALID:
+		style = _tisch_style_invalid
+	tisch_area.add_theme_stylebox_override("panel", style)
+
+## Updates selected_card_indices so the same logical cards stay selected after
+## human_reorder_hand moves the card at from_index to to_index.
+func _remap_selection_after_reorder(from_index: int, to_index: int) -> void:
+	for j in range(selected_card_indices.size()):
+		var i: int = selected_card_indices[j]
+		if i == from_index:
+			selected_card_indices[j] = to_index
+		elif from_index < to_index and i > from_index and i <= to_index:
+			selected_card_indices[j] = i - 1
+		elif to_index < from_index and i >= to_index and i < from_index:
+			selected_card_indices[j] = i + 1
+
+## Finalizes a hand-card drag: extends/lays a meld if dropped on a valid
+## target, reorders the hand if dropped on a new hand position, or snaps back
+## to the original layout otherwise. Always cleans up the floating preview and
+## any highlight state.
+func _on_card_drag_ended(hand_index: int, global_pos: Vector2) -> void:
+	if not _drag_active:
+		return
+
+	var meld_index := _drag_hover_meld_index
+	var hover_table := _drag_hover_table
+	var hover_valid := _drag_hover_valid
+	var indices := _drag_indices.duplicate()
+	var from_index := _drag_from_index
+	var target_slot := _drag_target_slot
+
+	_clear_drag_hover()
+
+	for i in indices:
+		if i >= 0 and i < _card_views.size() and is_instance_valid(_card_views[i]):
+			_card_views[i].modulate.a = 1.0
+
+	if _drag_reorder_tween != null and _drag_reorder_tween.is_valid():
+		_drag_reorder_tween.kill()
+	_drag_reorder_tween = null
+
+	if is_instance_valid(_drag_card_view):
+		_drag_layer.remove_child(_drag_card_view)
+		_drag_card_view.free()
+
+	_drag_active = false
+	_drag_card_view = null
+	_drag_badge = null
+	_drag_from_index = -1
+	_drag_indices = []
+	_drag_target_slot = -1
+	_drag_hover_meld_index = -1
+	_drag_hover_table = false
+	_drag_hover_valid = false
+
+	var acted := false
+	if meld_index >= 0 and hover_valid:
+		acted = game_state.human_extend_meld(meld_index, indices)
+	elif hover_table and hover_valid:
+		acted = game_state.human_lay_meld(indices)
+	elif indices.size() == 1 and target_slot != from_index:
+		game_state.human_reorder_hand(from_index, target_slot)
+		_remap_selection_after_reorder(from_index, target_slot)
+
+	if acted:
+		_clear_selection()
+
+	_refresh_ui()
 
 ## Tapping anywhere outside the cards/buttons/melds (i.e. directly on the
 ## background) deselects the current selection.
@@ -582,6 +1015,7 @@ func _render_header() -> void:
 
 func _render_hand() -> void:
 	_card_views.clear()
+	_card_slots.clear()
 	for child in player_hand_area.get_children():
 		child.queue_free()
 
@@ -599,6 +1033,7 @@ func _render_hand() -> void:
 	if count > 1:
 		separation = (available_width - count * CARD_WIDTH) / float(count - 1)
 	player_hand_area.add_theme_constant_override("separation", roundi(separation))
+	_drag_hand_step = CARD_WIDTH + separation
 
 	for hand_index in range(count):
 		# Each card slot is a plain Control — NOT a Container.
@@ -608,6 +1043,7 @@ func _render_hand() -> void:
 		var slot := Control.new()
 		slot.custom_minimum_size = Vector2(CARD_WIDTH, slot_height)
 		player_hand_area.add_child(slot)
+		_card_slots.append(slot)
 
 		var is_sel := selected_card_indices.has(hand_index)
 		var top_offset: float = 0.0 if is_sel else SELECTION_LIFT_PX
@@ -626,6 +1062,9 @@ func _render_hand() -> void:
 
 		card_view.setup(hand[hand_index], hand_index)
 		card_view.card_toggled.connect(_on_card_toggled)
+		card_view.drag_started.connect(_on_card_drag_started)
+		card_view.card_dragged.connect(_on_card_dragged)
+		card_view.drag_ended.connect(_on_card_drag_ended)
 		if is_sel:
 			card_view.set_selected(true)
 		_card_views.append(card_view)
@@ -789,6 +1228,15 @@ func _build_card_face_style() -> StyleBoxFlat:
 	style.set_corner_radius_all(8)
 	style.set_border_width_all(1)
 	style.border_color = CARD_BORDER_COLOR
+	return style
+
+## Colorful joker card-face style (matches CardView's joker hand-card look).
+func _build_joker_card_face_style() -> StyleBoxFlat:
+	var style := StyleBoxFlat.new()
+	style.bg_color = CardView.JOKER_BG_COLOR
+	style.set_corner_radius_all(8)
+	style.set_border_width_all(1)
+	style.border_color = CardView.JOKER_BORDER_COLOR
 	return style
 
 # ── Opponent area rendering ──────────────────────────────────────────────────
@@ -972,6 +1420,7 @@ func _spawn_flying_card(from_global: Vector2, to_global: Vector2) -> void:
 func _render_tisch() -> void:
 	for child in melds_row.get_children():
 		child.queue_free()
+	_meld_buttons.clear()
 
 	var melds: Array = game_state.table_melds
 	var is_empty := melds.is_empty()
@@ -999,16 +1448,7 @@ func _build_meld_group(meld_index: int, meld_entry: Dictionary) -> Control:
 	btn.custom_minimum_size = Vector2(content_width, MELD_CARD_HEIGHT + 2.0 * MELD_GROUP_PADDING)
 	btn.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 
-	var style: StyleBoxFlat = StyleBoxFlat.new()
-	style.bg_color = Color(0.3, 0.3, 0.3) if is_own else Color(0.32, 0.22, 0.22)
-	style.set_corner_radius_all(6)
-	if meld_index == selected_meld_index:
-		style.border_color = Color(0.2, 0.9, 0.2)
-		style.set_border_width_all(3)
-	btn.add_theme_stylebox_override("normal", style)
-	btn.add_theme_stylebox_override("hover", style)
-	btn.add_theme_stylebox_override("pressed", style)
-	btn.add_theme_stylebox_override("focus", StyleBoxEmpty.new())
+	_apply_meld_button_style(btn, meld_index, is_own, DropHighlight.NONE)
 
 	var hbox := HBoxContainer.new()
 	hbox.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -1021,18 +1461,223 @@ func _build_meld_group(meld_index: int, meld_entry: Dictionary) -> Control:
 	hbox.offset_bottom = -MELD_GROUP_PADDING
 	btn.add_child(hbox)
 
+	var joker_substitute: Card = RummyRules.get_joker_substitute(cards)
+	var swap_active := _joker_swap_mode_active()
+	var swap_match := swap_active and RummyRules.is_joker_swap_match(cards, _selected_swap_card())
 	for card in cards:
-		hbox.add_child(_build_mini_card(card))
+		if card.is_joker and swap_active:
+			hbox.add_child(_build_table_joker_button(card, joker_substitute, meld_index, swap_match))
+		else:
+			hbox.add_child(_build_mini_card(card, joker_substitute if card.is_joker else null))
 
 	btn.pressed.connect(_on_meld_tapped.bind(meld_index))
+	_meld_buttons.append(btn)
 	return btn
 
+## Builds and applies a table meld button's stylebox: neutral/reddish
+## background depending on ownership, a green border when selected for
+## Anlegen, and (while a card is being dragged over it) an outer green/red
+## drop-highlight border that takes precedence over the selection border.
+func _apply_meld_button_style(btn: Button, meld_index: int, is_own: bool, drop_state: DropHighlight) -> void:
+	var style := StyleBoxFlat.new()
+	style.bg_color = Color(0.3, 0.3, 0.3) if is_own else Color(0.32, 0.22, 0.22)
+	style.set_corner_radius_all(6)
+	if drop_state == DropHighlight.VALID:
+		style.border_color = DROP_VALID_COLOR
+		style.set_border_width_all(DROP_HIGHLIGHT_BORDER_WIDTH)
+	elif drop_state == DropHighlight.INVALID:
+		style.border_color = DROP_INVALID_COLOR
+		style.set_border_width_all(DROP_HIGHLIGHT_BORDER_WIDTH)
+	elif meld_index == selected_meld_index or _meld_extension_hint_valid(meld_index):
+		style.border_color = Color(0.2, 0.9, 0.2)
+		style.set_border_width_all(3)
+	btn.add_theme_stylebox_override("normal", style)
+	btn.add_theme_stylebox_override("hover", style)
+	btn.add_theme_stylebox_override("pressed", style)
+	btn.add_theme_stylebox_override("focus", StyleBoxEmpty.new())
+
+## Applies a drag-drop highlight border to the given table meld, or clears it
+## back to its normal/selected styling when state is NONE.
+func _set_meld_drop_highlight(meld_index: int, state: DropHighlight) -> void:
+	if meld_index < 0 or meld_index >= _meld_buttons.size():
+		return
+	var entry: Dictionary = game_state.table_melds[meld_index]
+	var is_own: bool = entry.get("owner", GameState.HUMAN_INDEX) == GameState.HUMAN_INDEX
+	_apply_meld_button_style(_meld_buttons[meld_index], meld_index, is_own, state)
+
+## True if the currently selected hand cards, added to the meld at
+## meld_index, would form a valid extension (group or run, possibly with a
+## joker filling a gap) — used to preview which melds could be extended with
+## the current selection before the player taps one (green border hint).
+func _meld_extension_hint_valid(meld_index: int) -> bool:
+	if selected_card_indices.is_empty():
+		return false
+	if not (game_state.human_has_melded and game_state.is_human_turn()
+			and game_state.human_has_drawn and not game_state.game_over):
+		return false
+	if meld_index < 0 or meld_index >= game_state.table_melds.size():
+		return false
+
+	var hand := game_state.get_human_hand()
+	var meld_entry: Dictionary = game_state.table_melds[meld_index]
+	var combined: Array = []
+	for c in meld_entry.get("cards", []):
+		combined.append(c)
+	for i in selected_card_indices:
+		if i < 0 or i >= hand.size():
+			return false
+		combined.append(hand[i])
+
+	return RummyRules.is_valid_group(combined) or RummyRules.is_valid_run(combined)
+
+## True while exactly one hand card is selected and the human could use it for
+## a Joker-Tausch (own first meld already laid, human's turn, game not over).
+## Drives whether table jokers render as clickable swap targets.
+func _joker_swap_mode_active() -> bool:
+	return selected_card_indices.size() == 1 \
+		and game_state.human_has_melded \
+		and game_state.is_human_turn() \
+		and not game_state.game_over
+
+## Returns the single selected hand card when _joker_swap_mode_active(), or
+## null otherwise.
+func _selected_swap_card() -> Card:
+	if selected_card_indices.size() != 1:
+		return null
+	var hand := game_state.get_human_hand()
+	var i: int = selected_card_indices[0]
+	if i < 0 or i >= hand.size():
+		return null
+	return hand[i]
+
+## Builds a clickable joker mini-card for Joker-Tausch. If swap_match (the
+## selected hand card is the real card this joker represents), it pulses
+## green and tapping it performs the swap. Otherwise tapping it gives a brief
+## red "invalid" flash.
+func _build_table_joker_button(card: Card, substitute: Card, meld_index: int, swap_match: bool) -> Control:
+	var btn := Button.new()
+	btn.custom_minimum_size = Vector2(MELD_CARD_WIDTH, MELD_CARD_HEIGHT)
+	btn.mouse_filter = Control.MOUSE_FILTER_STOP
+	btn.text = ""
+
+	var style := _build_joker_card_face_style()
+	if swap_match:
+		style.border_color = DROP_VALID_COLOR
+		style.set_border_width_all(DROP_HIGHLIGHT_BORDER_WIDTH)
+	btn.add_theme_stylebox_override("normal", style)
+	btn.add_theme_stylebox_override("hover", style)
+	btn.add_theme_stylebox_override("pressed", style)
+	btn.add_theme_stylebox_override("focus", StyleBoxEmpty.new())
+
+	var vbox := VBoxContainer.new()
+	vbox.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	vbox.alignment = BoxContainer.ALIGNMENT_CENTER
+	vbox.anchor_right = 1.0
+	vbox.anchor_bottom = 1.0
+	btn.add_child(vbox)
+
+	var label := Label.new()
+	label.text = "JOKER"
+	label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	label.add_theme_font_size_override("font_size", 16)
+	label.add_theme_color_override("font_color", CardView.JOKER_TEXT_COLOR)
+	label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	vbox.add_child(label)
+
+	if substitute != null:
+		var sub_label := Label.new()
+		sub_label.text = "= %s" % substitute.to_display_string()
+		sub_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		sub_label.add_theme_font_size_override("font_size", 14)
+		var sub_is_red := substitute.suit == Card.Suit.HEARTS or substitute.suit == Card.Suit.DIAMONDS
+		sub_label.add_theme_color_override("font_color", Color(1.0, 0.6, 0.6) if sub_is_red else Color(0.85, 0.85, 0.85))
+		sub_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		vbox.add_child(sub_label)
+
+	if swap_match:
+		_start_joker_swap_pulse(btn)
+
+	btn.pressed.connect(_on_table_joker_tapped.bind(meld_index, btn, style))
+	return btn
+
+## Loops a green pulse on a table joker that the current hand selection could
+## be swapped for, drawing attention to the valid Joker-Tausch target.
+func _start_joker_swap_pulse(btn: Button) -> void:
+	btn.modulate = Color.WHITE
+	var tween := btn.create_tween()
+	tween.set_loops()
+	tween.tween_property(btn, "modulate", JOKER_SWAP_PULSE_COLOR, JOKER_SWAP_PULSE_DURATION)\
+		.set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
+	tween.tween_property(btn, "modulate", Color.WHITE, JOKER_SWAP_PULSE_DURATION)\
+		.set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
+
+## Handles a tap on a table joker while _joker_swap_mode_active(): performs
+## the Joker-Tausch if the selected hand card matches this joker's
+## substitute, otherwise flashes the joker red briefly.
+func _on_table_joker_tapped(meld_index: int, btn: Button, normal_style: StyleBoxFlat) -> void:
+	if selected_card_indices.size() != 1:
+		return
+	var hand_index: int = selected_card_indices[0]
+	if game_state.human_swap_joker(meld_index, hand_index):
+		_clear_selection()
+		_refresh_ui()
+	else:
+		_flash_joker_invalid(btn, normal_style)
+
+## Briefly flashes a red border on an ineligible table joker after an invalid
+## Joker-Tausch tap, then restores its previous style.
+func _flash_joker_invalid(btn: Button, normal_style: StyleBoxFlat) -> void:
+	var flash_style := normal_style.duplicate()
+	flash_style.border_color = DROP_INVALID_COLOR
+	flash_style.set_border_width_all(DROP_HIGHLIGHT_BORDER_WIDTH)
+	btn.add_theme_stylebox_override("normal", flash_style)
+	btn.add_theme_stylebox_override("hover", flash_style)
+	btn.add_theme_stylebox_override("pressed", flash_style)
+
+	var tween := btn.create_tween()
+	tween.tween_interval(JOKER_SWAP_INVALID_FLASH_SEC)
+	tween.tween_callback(func():
+		btn.add_theme_stylebox_override("normal", normal_style)
+		btn.add_theme_stylebox_override("hover", normal_style)
+		btn.add_theme_stylebox_override("pressed", normal_style))
+
 ## Builds a small, non-interactive card visual used inside a meld group, with
-## the same cream face and red/dark suit colors as the hand cards.
-func _build_mini_card(card: Card) -> Control:
+## the same cream face and red/dark suit colors as the hand cards. For a
+## joker, substitute is the card it represents within this meld (shown as a
+## small "= 6♥" label) or null if it couldn't be determined.
+func _build_mini_card(card: Card, substitute: Card = null) -> Control:
 	var panel := PanelContainer.new()
 	panel.custom_minimum_size = Vector2(MELD_CARD_WIDTH, MELD_CARD_HEIGHT)
 	panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
+
+	if card.is_joker:
+		panel.add_theme_stylebox_override("panel", _build_joker_card_face_style())
+
+		var vbox := VBoxContainer.new()
+		vbox.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		vbox.alignment = BoxContainer.ALIGNMENT_CENTER
+		panel.add_child(vbox)
+
+		var label := Label.new()
+		label.text = "JOKER"
+		label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		label.add_theme_font_size_override("font_size", 16)
+		label.add_theme_color_override("font_color", CardView.JOKER_TEXT_COLOR)
+		label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		vbox.add_child(label)
+
+		if substitute != null:
+			var sub_label := Label.new()
+			sub_label.text = "= %s" % substitute.to_display_string()
+			sub_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+			sub_label.add_theme_font_size_override("font_size", 14)
+			var sub_is_red := substitute.suit == Card.Suit.HEARTS or substitute.suit == Card.Suit.DIAMONDS
+			sub_label.add_theme_color_override("font_color", Color(1.0, 0.6, 0.6) if sub_is_red else Color(0.85, 0.85, 0.85))
+			sub_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+			vbox.add_child(sub_label)
+
+		return panel
+
 	panel.add_theme_stylebox_override("panel", _build_card_face_style())
 
 	var label := Label.new()
