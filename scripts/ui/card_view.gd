@@ -68,9 +68,9 @@ func setup(p_card: Card, p_hand_index: int) -> void:
 		color = JOKER_TEXT_COLOR
 		corner_text = "JOKER"
 		center_text = "JOKER"
-		top_left_label.add_theme_font_size_override("font_size", 13)
-		bottom_right_label.add_theme_font_size_override("font_size", 13)
-		center_label.add_theme_font_size_override("font_size", 22)
+		top_left_label.add_theme_font_size_override("font_size", 17)
+		bottom_right_label.add_theme_font_size_override("font_size", 17)
+		center_label.add_theme_font_size_override("font_size", 28)
 	else:
 		var is_red := card.suit == Card.Suit.HEARTS or card.suit == Card.Suit.DIAMONDS
 		color = SUIT_COLOR_RED if is_red else SUIT_COLOR_DARK

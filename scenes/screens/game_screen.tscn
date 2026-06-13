@@ -88,7 +88,7 @@ theme_override_constants/separation = 32
 alignment = 1
 
 [node name="TischArea" type="PanelContainer" parent="MarginContainer/VBoxContainer"]
-custom_minimum_size = Vector2(0, 65)
+custom_minimum_size = Vector2(0, 240)
 layout_mode = 2
 size_flags_vertical = 3
 
@@ -112,12 +112,14 @@ vertical_alignment = 1
 [node name="MeldsScroll" type="ScrollContainer" parent="MarginContainer/VBoxContainer/TischArea/TischContent"]
 layout_mode = 2
 size_flags_vertical = 3
-horizontal_scroll_mode = 1
-vertical_scroll_mode = 0
+horizontal_scroll_mode = 0
+vertical_scroll_mode = 1
 
-[node name="MeldsRow" type="HBoxContainer" parent="MarginContainer/VBoxContainer/TischArea/TischContent/MeldsScroll"]
+[node name="MeldsRow" type="HFlowContainer" parent="MarginContainer/VBoxContainer/TischArea/TischContent/MeldsScroll"]
 layout_mode = 2
-theme_override_constants/separation = 10
+size_flags_horizontal = 3
+theme_override_constants/h_separation = 10
+theme_override_constants/v_separation = 10
 
 [node name="PlayerArea" type="VBoxContainer" parent="MarginContainer/VBoxContainer"]
 layout_mode = 2

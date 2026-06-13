@@ -9,10 +9,10 @@ const CardViewScene: PackedScene = preload("res://scenes/components/card_view.ts
 ## Hand card size. Cards always span the full width of PlayerHandArea —
 ## _render_hand() computes the HBoxContainer separation from the available
 ## width and the current card count so they spread out evenly.
-const CARD_WIDTH := 95.0
-const CARD_HEIGHT := 132.0
+const CARD_WIDTH := 130.0
+const CARD_HEIGHT := 180.0
 ## Pixels a selected card moves upward. Slot height = CARD_HEIGHT + SELECTION_LIFT_PX.
-const SELECTION_LIFT_PX := 29.0
+const SELECTION_LIFT_PX := 36.0
 
 ## MarginContainer's left+right margins, used as a fallback to compute
 ## PlayerHandArea's width before the first layout pass (when its .size.x is
@@ -21,10 +21,10 @@ const HORIZONTAL_MARGIN := 32.0
 
 ## Size of a single mini card inside a table meld group, and how much
 ## consecutive cards overlap (achieved via negative HBoxContainer separation).
-const MELD_CARD_WIDTH := 60.0
-const MELD_CARD_HEIGHT := 90.0
-const MELD_CARD_OVERLAP := 15.0
-const MELD_GROUP_PADDING := 8.0
+const MELD_CARD_WIDTH := 100.0
+const MELD_CARD_HEIGHT := 150.0
+const MELD_CARD_OVERLAP := 25.0
+const MELD_GROUP_PADDING := 10.0
 
 ## Size of a face-down card in an opponent's hand row, for the single-opponent
 ## (N=1) layout vs. the compact layout (N>=2). Separation between cards is
@@ -39,10 +39,6 @@ const OPPONENT_BADGE_FONT_SIZE_SINGLE := 30
 const OPPONENT_BADGE_FONT_SIZE_COMPACT := 20
 const OPPONENT_BADGE_SIZE_SINGLE := 50.0
 const OPPONENT_BADGE_SIZE_COMPACT := 36.0
-## Minimum (most negative) HBoxContainer separation allowed between opponent
-## cards — caps how much they're allowed to overlap when a hand is large.
-const OPPONENT_CARD_MIN_SEPARATION_SINGLE := -30.0
-const OPPONENT_CARD_MIN_SEPARATION_COMPACT := -34.0
 const OPPONENT_ROW_HEIGHT_SINGLE := 100.0
 const OPPONENT_ROW_HEIGHT_COMPACT := 92.0
 const OPPONENT_ROW_GAP := 8.0
@@ -241,6 +237,11 @@ func _ready() -> void:
 	offset_top = 0.0
 	offset_right = 0.0
 	offset_bottom = 0.0
+	# Some content (e.g. very wide table melds or opponent hands) can report a
+	# larger minimum size than the viewport. clip_contents keeps any such
+	# overflow from rendering outside the screen — the root Control's own size
+	# always stays the viewport size regardless of its children's minimums.
+	clip_contents = true
 
 	background_rect = _require_node("Background") as ColorRect
 	header_player_label = _require_node("PlayerScoreLabel") as Label
@@ -631,6 +632,12 @@ func _on_card_drag_started(hand_index: int) -> void:
 	if not is_instance_valid(card_view):
 		return
 
+	# A second touch starting a new drag before the previous one's drag_ended
+	# arrived would otherwise overwrite _drag_card_view and orphan its ghost
+	# in _drag_layer forever (the "stuck card" bug). Cancel any drag already
+	# in progress first.
+	_cancel_active_drag()
+
 	_drag_active = true
 	_drag_from_index = hand_index
 	_drag_target_slot = hand_index
@@ -815,26 +822,24 @@ func _remap_selection_after_reorder(from_index: int, to_index: int) -> void:
 		elif to_index < from_index and i >= to_index and i < from_index:
 			selected_card_indices[j] = i + 1
 
-## Finalizes a hand-card drag: extends/lays a meld if dropped on a valid
-## target, reorders the hand if dropped on a new hand position, or snaps back
-## to the original layout otherwise. Always cleans up the floating preview and
-## any highlight state.
-func _on_card_drag_ended(hand_index: int, global_pos: Vector2) -> void:
+## Cancels any drag currently in progress without performing its action:
+## restores dimmed/hidden hand cards and FLIP-preview offsets, clears drop
+## highlights, removes the floating ghost, and resets all _drag_* state.
+## Called both to finish a drag (the caller applies its own outcome
+## afterwards) and as a guard when a new drag starts before the previous
+## one's drag_ended arrived, so its ghost can never be orphaned in
+## _drag_layer.
+func _cancel_active_drag() -> void:
 	if not _drag_active:
 		return
 
-	var meld_index := _drag_hover_meld_index
-	var hover_table := _drag_hover_table
-	var hover_valid := _drag_hover_valid
-	var indices := _drag_indices.duplicate()
-	var from_index := _drag_from_index
-	var target_slot := _drag_target_slot
-
 	_clear_drag_hover()
 
-	for i in indices:
-		if i >= 0 and i < _card_views.size() and is_instance_valid(_card_views[i]):
-			_card_views[i].modulate.a = 1.0
+	for card_view in _card_views:
+		if is_instance_valid(card_view):
+			card_view.modulate.a = 1.0
+			card_view.offset_left = 0.0
+			card_view.offset_right = 0.0
 
 	if _drag_reorder_tween != null and _drag_reorder_tween.is_valid():
 		_drag_reorder_tween.kill()
@@ -853,6 +858,23 @@ func _on_card_drag_ended(hand_index: int, global_pos: Vector2) -> void:
 	_drag_hover_meld_index = -1
 	_drag_hover_table = false
 	_drag_hover_valid = false
+
+## Finalizes a hand-card drag: extends/lays a meld if dropped on a valid
+## target, reorders the hand if dropped on a new hand position, or snaps back
+## to the original layout otherwise. Always cleans up the floating preview and
+## any highlight state.
+func _on_card_drag_ended(hand_index: int, global_pos: Vector2) -> void:
+	if not _drag_active:
+		return
+
+	var meld_index := _drag_hover_meld_index
+	var hover_table := _drag_hover_table
+	var hover_valid := _drag_hover_valid
+	var indices := _drag_indices.duplicate()
+	var from_index := _drag_from_index
+	var target_slot := _drag_target_slot
+
+	_cancel_active_drag()
 
 	var acted := false
 	if meld_index >= 0 and hover_valid:
@@ -1361,14 +1383,16 @@ func _fill_opponent_hand_area(hand_area: Control, player_index: int, slot_width:
 
 	var card_w: float = OPPONENT_CARD_WIDTH_COMPACT if compact else OPPONENT_CARD_WIDTH_SINGLE
 	var card_h: float = OPPONENT_CARD_HEIGHT_COMPACT if compact else OPPONENT_CARD_HEIGHT_SINGLE
-	var min_sep: float = OPPONENT_CARD_MIN_SEPARATION_COMPACT if compact else OPPONENT_CARD_MIN_SEPARATION_SINGLE
 	var slot_padding: float = 16.0 if compact else 20.0 # 2x panel content margin
 	var available: float = slot_width - slot_padding
 
 	var count := game_state.get_player_hand_count(player_index)
 	var separation: float = 0.0
 	if count > 1:
-		separation = maxf((available - count * card_w) / float(count - 1), min_sep)
+		# No lower bound: always shrink to fit available width, however much
+		# overlap that requires, so this row never grows wider than its slot
+		# (which would push the whole layout wider than the screen).
+		separation = (available - count * card_w) / float(count - 1)
 	hand_area.add_theme_constant_override("separation", roundi(separation))
 
 	for _i in range(count):
@@ -1461,14 +1485,19 @@ func _build_meld_group(meld_index: int, meld_entry: Dictionary) -> Control:
 	hbox.offset_bottom = -MELD_GROUP_PADDING
 	btn.add_child(hbox)
 
-	var joker_substitute: Card = RummyRules.get_joker_substitute(cards)
+	var substitutes := RummyRules.get_joker_substitutes(cards)
 	var swap_active := _joker_swap_mode_active()
-	var swap_match := swap_active and RummyRules.is_joker_swap_match(cards, _selected_swap_card())
-	for card in cards:
+	var swap_card := _selected_swap_card()
+	for i in range(cards.size()):
+		var card: Card = cards[i]
+		var substitute: Card = substitutes[i]
 		if card.is_joker and swap_active:
-			hbox.add_child(_build_table_joker_button(card, joker_substitute, meld_index, swap_match))
+			var swap_match := (swap_card != null and not swap_card.is_joker
+				and substitute != null
+				and substitute.suit == swap_card.suit and substitute.rank == swap_card.rank)
+			hbox.add_child(_build_table_joker_button(card, substitute, meld_index, i, swap_match))
 		else:
-			hbox.add_child(_build_mini_card(card, joker_substitute if card.is_joker else null))
+			hbox.add_child(_build_mini_card(card, substitute if card.is_joker else null))
 
 	btn.pressed.connect(_on_meld_tapped.bind(meld_index))
 	_meld_buttons.append(btn)
@@ -1554,7 +1583,7 @@ func _selected_swap_card() -> Card:
 ## selected hand card is the real card this joker represents), it pulses
 ## green and tapping it performs the swap. Otherwise tapping it gives a brief
 ## red "invalid" flash.
-func _build_table_joker_button(card: Card, substitute: Card, meld_index: int, swap_match: bool) -> Control:
+func _build_table_joker_button(card: Card, substitute: Card, meld_index: int, joker_index: int, swap_match: bool) -> Control:
 	var btn := Button.new()
 	btn.custom_minimum_size = Vector2(MELD_CARD_WIDTH, MELD_CARD_HEIGHT)
 	btn.mouse_filter = Control.MOUSE_FILTER_STOP
@@ -1579,7 +1608,7 @@ func _build_table_joker_button(card: Card, substitute: Card, meld_index: int, sw
 	var label := Label.new()
 	label.text = "JOKER"
 	label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	label.add_theme_font_size_override("font_size", 16)
+	label.add_theme_font_size_override("font_size", 20)
 	label.add_theme_color_override("font_color", CardView.JOKER_TEXT_COLOR)
 	label.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	vbox.add_child(label)
@@ -1588,7 +1617,7 @@ func _build_table_joker_button(card: Card, substitute: Card, meld_index: int, sw
 		var sub_label := Label.new()
 		sub_label.text = "= %s" % substitute.to_display_string()
 		sub_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-		sub_label.add_theme_font_size_override("font_size", 14)
+		sub_label.add_theme_font_size_override("font_size", 18)
 		var sub_is_red := substitute.suit == Card.Suit.HEARTS or substitute.suit == Card.Suit.DIAMONDS
 		sub_label.add_theme_color_override("font_color", Color(1.0, 0.6, 0.6) if sub_is_red else Color(0.85, 0.85, 0.85))
 		sub_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -1597,7 +1626,7 @@ func _build_table_joker_button(card: Card, substitute: Card, meld_index: int, sw
 	if swap_match:
 		_start_joker_swap_pulse(btn)
 
-	btn.pressed.connect(_on_table_joker_tapped.bind(meld_index, btn, style))
+	btn.pressed.connect(_on_table_joker_tapped.bind(meld_index, joker_index, btn, style))
 	return btn
 
 ## Loops a green pulse on a table joker that the current hand selection could
@@ -1614,11 +1643,11 @@ func _start_joker_swap_pulse(btn: Button) -> void:
 ## Handles a tap on a table joker while _joker_swap_mode_active(): performs
 ## the Joker-Tausch if the selected hand card matches this joker's
 ## substitute, otherwise flashes the joker red briefly.
-func _on_table_joker_tapped(meld_index: int, btn: Button, normal_style: StyleBoxFlat) -> void:
+func _on_table_joker_tapped(meld_index: int, joker_index: int, btn: Button, normal_style: StyleBoxFlat) -> void:
 	if selected_card_indices.size() != 1:
 		return
 	var hand_index: int = selected_card_indices[0]
-	if game_state.human_swap_joker(meld_index, hand_index):
+	if game_state.human_swap_joker(meld_index, hand_index, joker_index):
 		_clear_selection()
 		_refresh_ui()
 	else:
@@ -1661,7 +1690,7 @@ func _build_mini_card(card: Card, substitute: Card = null) -> Control:
 		var label := Label.new()
 		label.text = "JOKER"
 		label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-		label.add_theme_font_size_override("font_size", 16)
+		label.add_theme_font_size_override("font_size", 20)
 		label.add_theme_color_override("font_color", CardView.JOKER_TEXT_COLOR)
 		label.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		vbox.add_child(label)
@@ -1670,7 +1699,7 @@ func _build_mini_card(card: Card, substitute: Card = null) -> Control:
 			var sub_label := Label.new()
 			sub_label.text = "= %s" % substitute.to_display_string()
 			sub_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-			sub_label.add_theme_font_size_override("font_size", 14)
+			sub_label.add_theme_font_size_override("font_size", 22)
 			var sub_is_red := substitute.suit == Card.Suit.HEARTS or substitute.suit == Card.Suit.DIAMONDS
 			sub_label.add_theme_color_override("font_color", Color(1.0, 0.6, 0.6) if sub_is_red else Color(0.85, 0.85, 0.85))
 			sub_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -1684,7 +1713,7 @@ func _build_mini_card(card: Card, substitute: Card = null) -> Control:
 	label.text = card.to_display_string()
 	label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-	label.add_theme_font_size_override("font_size", 24)
+	label.add_theme_font_size_override("font_size", 36)
 	var is_red := card.suit == Card.Suit.HEARTS or card.suit == Card.Suit.DIAMONDS
 	label.add_theme_color_override("font_color", Color(0.8, 0.0, 0.0) if is_red else Color(0.133, 0.133, 0.133))
 	label.mouse_filter = Control.MOUSE_FILTER_IGNORE

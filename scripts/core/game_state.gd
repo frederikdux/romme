@@ -256,11 +256,12 @@ func human_extend_meld(meld_index: int, card_indices: Array[int]) -> bool:
 	status_text = "Erfolgreich angelegt!"
 	return true
 
-## Exchanges the joker in the table meld at meld_index for the matching real
-## card from the human's hand: the real card takes the joker's place on the
-## table, and the joker moves to the human's hand — usable freely afterwards,
-## as if drawn from the deck. Requires the human's first meld to be laid.
-func human_swap_joker(meld_index: int, hand_index: int) -> bool:
+## Exchanges the joker at joker_index within the table meld at meld_index for
+## the matching real card from the human's hand: the real card takes the
+## joker's place on the table, and the joker moves to the human's hand —
+## usable freely afterwards, as if drawn from the deck. Requires the human's
+## first meld to be laid.
+func human_swap_joker(meld_index: int, hand_index: int, joker_index: int) -> bool:
 	if not _assert_human_action_allowed():
 		return false
 	if not human_has_melded:
@@ -279,17 +280,15 @@ func human_swap_joker(meld_index: int, hand_index: int) -> bool:
 	var cards: Array = meld_entry["cards"]
 	var hand_card: Card = human_hand[hand_index]
 
-	if not RummyRules.is_joker_swap_match(cards, hand_card):
-		status_text = "Diese Karte passt nicht auf den Joker."
+	if joker_index < 0 or joker_index >= cards.size() or not cards[joker_index].is_joker:
+		status_text = "Kein Joker in dieser Meldung."
 		return false
 
-	var joker_index := -1
-	for i in range(cards.size()):
-		if cards[i].is_joker:
-			joker_index = i
-			break
-	if joker_index == -1:
-		status_text = "Kein Joker in dieser Meldung."
+	var substitutes: Array = RummyRules.get_joker_substitutes(cards)
+	var substitute: Card = substitutes[joker_index]
+	if hand_card.is_joker or substitute == null \
+			or substitute.suit != hand_card.suit or substitute.rank != hand_card.rank:
+		status_text = "Diese Karte passt nicht auf den Joker."
 		return false
 
 	var joker: Card = cards[joker_index]
