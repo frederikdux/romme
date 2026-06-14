@@ -3,8 +3,21 @@ extends Control
 ## Top-level screen for a single match. Owns a GameState, renders it into the
 ## scene's UI nodes, and forwards button/card presses back into GameState.
 ## This script may freely depend on Control/Button/etc — GameState must not.
+##
+## Entry points called by main.gd after instantiating this scene:
+## start_new_game(), resume_saved_game(), show_settings(). Emits
+## return_to_main_menu when the screen should be replaced by MainMenu again.
+
+## Emitted when the player chooses "Zum Hauptmenü" from the pause overlay,
+## when "Zurück" is pressed in the options overlay after it was opened via
+## show_settings(), or a short while after a round ends.
+signal return_to_main_menu
 
 const CardViewScene: PackedScene = preload("res://scenes/components/card_view.tscn")
+## Loaded directly (rather than relying on the JokerPlaceholder class_name
+## being registered) so this still resolves even before the editor's global
+## script class cache has picked up a newly added script.
+const JokerPlaceholderScript: GDScript = preload("res://scripts/ui/joker_placeholder.gd")
 
 ## Hand card size. Cards always span the full width of PlayerHandArea —
 ## _render_hand() computes the HBoxContainer separation from the available
@@ -25,6 +38,11 @@ const MELD_CARD_WIDTH := 100.0
 const MELD_CARD_HEIGHT := 150.0
 const MELD_CARD_OVERLAP := 25.0
 const MELD_GROUP_PADDING := 10.0
+
+## Width of the dashed "+" joker-attach placeholder shown beside a table run
+## meld, and the gap between it and the meld's card group.
+const JOKER_PLACEHOLDER_WIDTH := 70.0
+const JOKER_PLACEHOLDER_GAP := 8.0
 
 ## Size of a face-down card in an opponent's hand row, for the single-opponent
 ## (N=1) layout vs. the compact layout (N>=2). Separation between cards is
@@ -83,6 +101,10 @@ const BOT_TURN_DELAY_SEC := 0.8
 ## Pause between each visible step of a bot's turn (draw / meld / extend /
 ## discard) so the sequence is easy to follow.
 const BOT_STEP_DELAY_SEC := 0.5
+
+## How long the final status text (winner + penalty points) stays on screen
+## after a round ends, before returning to MainMenu.
+const ROUND_OVER_RETURN_DELAY_SEC := 3.0
 
 ## Pulsing glow shown around the deck/discard piles while they're clickable
 ## (i.e. during the draw phase), and the hover/touch scale-up factor.
@@ -157,6 +179,15 @@ var _drag_hand_step: float = 0.0
 ## without a full rebuild.
 var _meld_buttons: Array[Button] = []
 
+## meld_index -> {"left": bool, "right": bool}, recomputed by _render_tisch
+## from the current joker-attach selection (see _current_joker_extra_cards).
+## Drives which "+" placeholders _build_meld_stack renders.
+var _joker_attach_hints: Dictionary = {}
+## One entry per rendered "+" placeholder: {"control": JokerPlaceholder,
+## "meld_index": int, "side": "left"/"right"}. Rebuilt by _render_tisch, used
+## by _on_card_dragged to detect drag-drop onto a placeholder.
+var _joker_placeholders: Array[Dictionary] = []
+
 ## Precomputed TischArea panel styles, swapped during drag-over highlighting.
 var _tisch_style_normal: StyleBoxFlat
 var _tisch_style_valid: StyleBoxFlat
@@ -188,6 +219,15 @@ var _drag_hover_valid: bool = false
 ## whenever the preview target slot changes.
 var _drag_reorder_tween: Tween
 
+## Set to the joker Card a successful Joker-Tausch just moved into the human's
+## hand, for one input cycle. A duplicate/ghost press-and-drag delivered in the
+## same frame as the table-joker tap (touch + emulated-mouse double events) can
+## otherwise land on this card's freshly rebuilt CardView and immediately lay
+## it back onto the meld it just came from. _on_card_drag_started ignores a
+## drag start for this exact card once; cleared on the next idle frame so a
+## genuine later drag of the same card still works normally.
+var _joker_swap_guard_card: Card = null
+
 var background_rect: ColorRect
 var header_player_label: Label
 var header_round_label: Label
@@ -216,6 +256,8 @@ var menu_overlay: Control
 var menu_overlay_bg: Control
 var new_game_confirm_button: Button
 var menu_cancel_button: Button
+var main_menu_button: Button
+var new_game_confirm_dialog: ConfirmationDialog
 var setup_overlay: Control
 var opponents_1_button: Button
 var opponents_2_button: Button
@@ -230,6 +272,17 @@ var joker_count_minus_button: Button
 var joker_count_plus_button: Button
 ## Re-entrancy guard for _run_bot_turn_sequence().
 var _bot_turn_in_progress: bool = false
+## True once a game has been started or resumed; guards _persist_game_state()
+## against overwriting a save with an empty GameState before setup is done.
+var _game_in_progress: bool = false
+## True once _schedule_return_to_main_menu() has fired for this round, so a
+## second game_over-triggered persist (e.g. from a stray UI action) doesn't
+## queue a second return.
+var _round_over_handled: bool = false
+## True while the options overlay was opened via show_settings() (from
+## MainMenu's "Einstellungen"), so "Zurück" returns to MainMenu instead of
+## the opponent-count setup dialog.
+var _settings_opened_from_main_menu: bool = false
 
 func _ready() -> void:
 	set_anchors_preset(Control.PRESET_FULL_RECT)
@@ -264,6 +317,8 @@ func _ready() -> void:
 	menu_overlay_bg = _require_node("MenuOverlayBg") as Control
 	new_game_confirm_button = _require_node("NewGameConfirmButton") as Button
 	menu_cancel_button = _require_node("MenuCancelButton") as Button
+	main_menu_button = _require_node("MainMenuButton") as Button
+	new_game_confirm_dialog = _require_node("NewGameConfirmDialog") as ConfirmationDialog
 	setup_overlay = _require_node("SetupOverlay") as Control
 	opponents_1_button = _require_node("Opponents1Button") as Button
 	opponents_2_button = _require_node("Opponents2Button") as Button
@@ -283,6 +338,8 @@ func _ready() -> void:
 	settings_button.pressed.connect(_on_settings_pressed)
 	new_game_confirm_button.pressed.connect(_on_new_game_confirm_pressed)
 	menu_cancel_button.pressed.connect(_on_menu_cancel_pressed)
+	main_menu_button.pressed.connect(_on_main_menu_pressed)
+	new_game_confirm_dialog.confirmed.connect(_on_new_game_confirmed)
 	opponents_1_button.pressed.connect(_on_opponent_count_selected.bind(1))
 	opponents_2_button.pressed.connect(_on_opponent_count_selected.bind(2))
 	opponents_3_button.pressed.connect(_on_opponent_count_selected.bind(3))
@@ -327,6 +384,7 @@ func _ready() -> void:
 	_style_button(settings_button, COLOR_GREY_DARK)
 	_style_button(new_game_confirm_button, COLOR_ACCENT_BLUE)
 	_style_button(menu_cancel_button, COLOR_GREY_NEUTRAL)
+	_style_button(main_menu_button, COLOR_GREY_NEUTRAL)
 	_style_button(opponents_1_button, COLOR_ACCENT_BLUE)
 	_style_button(opponents_2_button, COLOR_ACCENT_BLUE)
 	_style_button(opponents_3_button, COLOR_ACCENT_BLUE)
@@ -344,7 +402,6 @@ func _ready() -> void:
 	add_child(_drag_layer)
 
 	game_state = GameState.new()
-	setup_overlay.visible = true
 
 ## Finds a required child node by name or fails loudly.
 func _require_node(node_name: String) -> Node:
@@ -355,12 +412,67 @@ func _require_node(node_name: String) -> Node:
 		assert(false, message)
 	return node
 
+# ── Screen entry points (called by main.gd) ────────────────────────────────────
+
+## Shows the "Wie viele Gegner?" setup dialog for a fresh game.
+func start_new_game() -> void:
+	setup_overlay.visible = true
+
+## Loads user://savegame.json (if any) and continues the bot turn sequence if
+## it's currently a bot's turn. No-op if no save exists.
+func resume_saved_game() -> void:
+	if not SaveGameService.load_into(game_state):
+		return
+	_game_in_progress = true
+	_clear_selection()
+	_refresh_ui()
+	if not game_state.game_over and not game_state.is_human_turn():
+		_schedule_bot_turn()
+
+## Opens the joker-count options screen directly from the main menu; "Zurück"
+## returns to the main menu instead of the opponent-count dialog.
+func show_settings() -> void:
+	_settings_opened_from_main_menu = true
+	options_overlay.visible = true
+	_render_joker_count_label()
+
+# ── Persistence ───────────────────────────────────────────────────────────────
+
+## Saves the current game state to disk, or deletes the save file once the
+## round has ended (so "Weiterspielen" stops appearing). No-op before a game
+## has started (e.g. a focus-out while SetupOverlay is still showing).
+func _persist_game_state() -> void:
+	if not _game_in_progress:
+		return
+	if game_state.game_over:
+		SaveGameService.delete_save()
+		_schedule_return_to_main_menu()
+	else:
+		SaveGameService.save(game_state)
+
+## Schedules a one-time return to the main menu after a round ends, giving the
+## player a moment to see the final status text (winner + penalty points).
+func _schedule_return_to_main_menu() -> void:
+	if _round_over_handled:
+		return
+	_round_over_handled = true
+	get_tree().create_timer(ROUND_OVER_RETURN_DELAY_SEC).timeout.connect(func() -> void:
+		return_to_main_menu.emit())
+
+## Persists the game whenever the app loses focus or is about to close, so a
+## full app-kill never loses progress.
+func _notification(what: int) -> void:
+	if what == NOTIFICATION_WM_WINDOW_FOCUS_OUT or what == NOTIFICATION_WM_CLOSE_REQUEST:
+		_persist_game_state()
+
 # ── Button handlers ───────────────────────────────────────────────────────────
 
 func _on_meldung_legen_pressed() -> void:
 	if game_state.human_lay_meld(selected_card_indices):
 		_clear_selection()
 	_refresh_ui()
+	if game_state.game_over:
+		_persist_game_state()
 
 func _on_anlegen_pressed() -> void:
 	if selected_meld_index < 0 or selected_card_indices.is_empty():
@@ -368,6 +480,8 @@ func _on_anlegen_pressed() -> void:
 	if game_state.human_extend_meld(selected_meld_index, selected_card_indices):
 		_clear_selection()
 	_refresh_ui()
+	if game_state.game_over:
+		_persist_game_state()
 
 func _on_abwerfen_pressed() -> void:
 	if selected_card_indices.size() != 1:
@@ -376,6 +490,8 @@ func _on_abwerfen_pressed() -> void:
 	if discarded:
 		_clear_selection()
 	_refresh_ui()
+	if discarded:
+		_persist_game_state()
 	if discarded and not game_state.game_over and not game_state.is_human_turn():
 		_schedule_bot_turn()
 
@@ -502,6 +618,7 @@ func _run_single_bot_turn() -> void:
 
 	if game_state.game_over:
 		_refresh_ui()
+		_persist_game_state()
 		return
 
 	# Discard
@@ -511,6 +628,7 @@ func _run_single_bot_turn() -> void:
 		var discard_pos := discard_rect.position + discard_rect.size * 0.5 - FLYING_CARD_SIZE * 0.5
 		_spawn_flying_card(opp_pos, discard_pos)
 	_refresh_ui()
+	_persist_game_state()
 
 # ── Menu overlay ──────────────────────────────────────────────────────────────
 
@@ -525,8 +643,21 @@ func _on_menu_overlay_bg_gui_input(event: InputEvent) -> void:
 		_on_menu_cancel_pressed()
 
 func _on_new_game_confirm_pressed() -> void:
+	new_game_confirm_dialog.popup_centered()
+
+func _on_new_game_confirmed() -> void:
 	menu_overlay.visible = false
+	SaveGameService.delete_save()
+	_game_in_progress = false
+	_round_over_handled = false
 	setup_overlay.visible = true
+
+## "Zum Hauptmenü": persists the current game (if any) and returns to MainMenu.
+func _on_main_menu_pressed() -> void:
+	menu_overlay.visible = false
+	_persist_game_state()
+	if not _round_over_handled:
+		return_to_main_menu.emit()
 
 # ── Setup overlay ─────────────────────────────────────────────────────────────
 
@@ -534,6 +665,9 @@ func _on_opponent_count_selected(count: int) -> void:
 	setup_overlay.visible = false
 	_clear_selection()
 	game_state.new_game(count)
+	SaveGameService.delete_save()
+	_round_over_handled = false
+	_game_in_progress = true
 	_refresh_ui()
 
 # ── Options overlay ───────────────────────────────────────────────────────────
@@ -545,7 +679,11 @@ func _on_options_pressed() -> void:
 
 func _on_options_back_pressed() -> void:
 	options_overlay.visible = false
-	setup_overlay.visible = true
+	if _settings_opened_from_main_menu:
+		_settings_opened_from_main_menu = false
+		return_to_main_menu.emit()
+	else:
+		setup_overlay.visible = true
 
 func _on_options_overlay_bg_gui_input(event: InputEvent) -> void:
 	if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
@@ -619,6 +757,10 @@ func _deselect_all() -> void:
 	_render_phase_indicator()
 	_render_tisch()
 
+## Clears the Joker-Tausch ghost-input guard set by _on_table_joker_tapped.
+func _clear_joker_swap_guard() -> void:
+	_joker_swap_guard_card = null
+
 # ── Hand drag & drop ─────────────────────────────────────────────────────────
 
 ## Called when a hand card's press moves past the drag threshold. Determines
@@ -630,6 +772,14 @@ func _on_card_drag_started(hand_index: int) -> void:
 		return
 	var card_view := _card_views[hand_index]
 	if not is_instance_valid(card_view):
+		return
+
+	# A ghost/duplicate press delivered in the same input batch as a
+	# Joker-Tausch tap can land on this card right after it was rebuilt into
+	# the hand, and would otherwise immediately drag it back onto the meld it
+	# just came from. Swallow exactly one drag start for that card.
+	if _joker_swap_guard_card != null and card_view.card == _joker_swap_guard_card:
+		_clear_joker_swap_guard()
 		return
 
 	# A second touch starting a new drag before the previous one's drag_ended
@@ -703,6 +853,10 @@ func _on_card_drag_started(hand_index: int) -> void:
 
 		ghost.add_child(_drag_badge)
 
+	# Show "+" joker-attach placeholders for the dragged card(s), even if the
+	# joker wasn't pre-selected (a direct drag from the hand).
+	_render_tisch()
+
 ## Updates the floating drag preview's position to follow the pointer, applies
 ## green/red drop-target highlighting on hovered melds/the Tisch area, and (for
 ## single-card drags) re-runs the FLIP "make way" preview for hand reordering.
@@ -718,11 +872,20 @@ func _on_card_dragged(hand_index: int, global_pos: Vector2) -> void:
 		drag_cards.append(hand[i])
 
 	var hovered_meld_index := -1
-	for i in range(_meld_buttons.size()):
-		var btn := _meld_buttons[i]
-		if is_instance_valid(btn) and btn.get_global_rect().has_point(global_pos):
-			hovered_meld_index = i
+	var hovered_via_placeholder := false
+	for ph in _joker_placeholders:
+		var ctrl: Control = ph["control"]
+		if is_instance_valid(ctrl) and ctrl.get_global_rect().has_point(global_pos):
+			hovered_meld_index = ph["meld_index"]
+			hovered_via_placeholder = true
 			break
+
+	if hovered_meld_index < 0:
+		for i in range(_meld_buttons.size()):
+			var btn := _meld_buttons[i]
+			if is_instance_valid(btn) and btn.get_global_rect().has_point(global_pos):
+				hovered_meld_index = i
+				break
 
 	var hovered_table := hovered_meld_index < 0 and tisch_area.get_global_rect().has_point(global_pos)
 
@@ -732,15 +895,18 @@ func _on_card_dragged(hand_index: int, global_pos: Vector2) -> void:
 		_drag_hover_table = hovered_table
 
 		if hovered_meld_index >= 0:
-			var meld_entry: Dictionary = game_state.table_melds[hovered_meld_index]
-			var combined: Array = []
-			for c in meld_entry.get("cards", []):
-				combined.append(c)
-			for c in drag_cards:
-				combined.append(c)
-			_drag_hover_valid = (game_state.human_has_melded and game_state.is_human_turn()
-				and game_state.human_has_drawn and not game_state.game_over
-				and (RummyRules.is_valid_group(combined) or RummyRules.is_valid_run(combined)))
+			if hovered_via_placeholder:
+				_drag_hover_valid = true
+			else:
+				var meld_entry: Dictionary = game_state.table_melds[hovered_meld_index]
+				var combined: Array = []
+				for c in meld_entry.get("cards", []):
+					combined.append(c)
+				for c in drag_cards:
+					combined.append(c)
+				_drag_hover_valid = (game_state.human_has_melded and game_state.is_human_turn()
+					and game_state.human_has_drawn and not game_state.game_over
+					and (RummyRules.is_valid_group(combined) or RummyRules.is_valid_run(combined)))
 			_set_meld_drop_highlight(hovered_meld_index,
 				DropHighlight.VALID if _drag_hover_valid else DropHighlight.INVALID)
 		elif hovered_table:
@@ -889,6 +1055,8 @@ func _on_card_drag_ended(hand_index: int, global_pos: Vector2) -> void:
 		_clear_selection()
 
 	_refresh_ui()
+	if acted and game_state.game_over:
+		_persist_game_state()
 
 ## Tapping anywhere outside the cards/buttons/melds (i.e. directly on the
 ## background) deselects the current selection.
@@ -1445,6 +1613,8 @@ func _render_tisch() -> void:
 	for child in melds_row.get_children():
 		child.queue_free()
 	_meld_buttons.clear()
+	_joker_placeholders.clear()
+	_joker_attach_hints = _compute_joker_attach_hints()
 
 	var melds: Array = game_state.table_melds
 	var is_empty := melds.is_empty()
@@ -1453,7 +1623,93 @@ func _render_tisch() -> void:
 
 	for meld_index in range(melds.size()):
 		var entry: Dictionary = melds[meld_index]
-		melds_row.add_child(_build_meld_group(meld_index, entry))
+		melds_row.add_child(_build_meld_stack(meld_index, entry))
+
+## Wraps a table meld's card group together with any "+" joker-attach
+## placeholders for it (see _joker_attach_hints) so they wrap as one unit in
+## the flowing MeldsRow.
+func _build_meld_stack(meld_index: int, meld_entry: Dictionary) -> Control:
+	var hints: Dictionary = _joker_attach_hints.get(meld_index, {})
+	if not hints.get("left", false) and not hints.get("right", false):
+		return _build_meld_group(meld_index, meld_entry)
+
+	var row := HBoxContainer.new()
+	row.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	row.add_theme_constant_override("separation", int(JOKER_PLACEHOLDER_GAP))
+
+	if hints.get("left", false):
+		row.add_child(_build_joker_placeholder(meld_index, "left"))
+
+	row.add_child(_build_meld_group(meld_index, meld_entry))
+
+	if hints.get("right", false):
+		row.add_child(_build_joker_placeholder(meld_index, "right"))
+
+	return row
+
+## Builds a dashed, pulsing "+" placeholder that lets the player attach the
+## currently selected/dragged joker (see _current_joker_extra_cards) to the
+## low ("left") or high ("right") end of the meld at meld_index.
+func _build_joker_placeholder(meld_index: int, side: String) -> Control:
+	var ph := JokerPlaceholderScript.new() as Control
+	ph.custom_minimum_size = Vector2(JOKER_PLACEHOLDER_WIDTH, MELD_CARD_HEIGHT + 2.0 * MELD_GROUP_PADDING)
+	ph.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	ph.connect("tapped", _on_joker_placeholder_tapped.bind(meld_index))
+	_joker_placeholders.append({"control": ph, "meld_index": meld_index, "side": side})
+	return ph
+
+## Returns the hand cards relevant for joker-attach placeholder detection: the
+## cards being dragged while a drag is active, otherwise the current hand
+## selection. Empty if any index is out of range.
+func _current_joker_extra_cards() -> Array:
+	var hand := game_state.get_human_hand()
+	var indices: Array[int] = _drag_indices if _drag_active else selected_card_indices
+	var result: Array = []
+	for i in indices:
+		if i < 0 or i >= hand.size():
+			return []
+		result.append(hand[i])
+	return result
+
+## Computes, for every table meld, whether _current_joker_extra_cards() (which
+## must include at least one Joker) could be attached to its low and/or high
+## end — drives the "+" placeholders. Empty outside the human's meld phase.
+func _compute_joker_attach_hints() -> Dictionary:
+	var hints := {}
+	if not (game_state.human_has_melded and game_state.is_human_turn()
+			and game_state.human_has_drawn and not game_state.game_over):
+		return hints
+
+	var extra := _current_joker_extra_cards()
+	if extra.is_empty():
+		return hints
+	var has_joker := false
+	for card in extra:
+		if card.is_joker:
+			has_joker = true
+			break
+	if not has_joker:
+		return hints
+
+	var melds: Array = game_state.table_melds
+	for meld_index in range(melds.size()):
+		var entry: Dictionary = melds[meld_index]
+		var sides := RummyRules.get_run_attach_sides(entry.get("cards", []), extra)
+		if sides.get("left", false) or sides.get("right", false):
+			hints[meld_index] = sides
+	return hints
+
+## Tapping a "+" placeholder attaches the current hand selection to that end
+## of the meld, exactly like selecting the meld and pressing "Anlegen".
+func _on_joker_placeholder_tapped(meld_index: int) -> void:
+	var indices := selected_card_indices.duplicate()
+	if indices.is_empty():
+		return
+	if game_state.human_extend_meld(meld_index, indices):
+		_clear_selection()
+	_refresh_ui()
+	if game_state.game_over:
+		_persist_game_state()
 
 ## Builds a clickable group representing one table meld as overlapping mini
 ## cards. Own melds use a neutral background; opponent melds a reddish tint.
@@ -1608,7 +1864,7 @@ func _build_table_joker_button(card: Card, substitute: Card, meld_index: int, jo
 	var label := Label.new()
 	label.text = "JOKER"
 	label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	label.add_theme_font_size_override("font_size", 20)
+	label.add_theme_font_size_override("font_size", 24)
 	label.add_theme_color_override("font_color", CardView.JOKER_TEXT_COLOR)
 	label.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	vbox.add_child(label)
@@ -1617,7 +1873,7 @@ func _build_table_joker_button(card: Card, substitute: Card, meld_index: int, jo
 		var sub_label := Label.new()
 		sub_label.text = "= %s" % substitute.to_display_string()
 		sub_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-		sub_label.add_theme_font_size_override("font_size", 18)
+		sub_label.add_theme_font_size_override("font_size", 22)
 		var sub_is_red := substitute.suit == Card.Suit.HEARTS or substitute.suit == Card.Suit.DIAMONDS
 		sub_label.add_theme_color_override("font_color", Color(1.0, 0.6, 0.6) if sub_is_red else Color(0.85, 0.85, 0.85))
 		sub_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -1647,9 +1903,14 @@ func _on_table_joker_tapped(meld_index: int, joker_index: int, btn: Button, norm
 	if selected_card_indices.size() != 1:
 		return
 	var hand_index: int = selected_card_indices[0]
+	var meld_entry: Dictionary = game_state.table_melds[meld_index]
+	var meld_cards: Array = meld_entry.get("cards", [])
+	var joker: Card = meld_cards[joker_index] if joker_index >= 0 and joker_index < meld_cards.size() else null
 	if game_state.human_swap_joker(meld_index, hand_index, joker_index):
+		_joker_swap_guard_card = joker
 		_clear_selection()
 		_refresh_ui()
+		_clear_joker_swap_guard.call_deferred()
 	else:
 		_flash_joker_invalid(btn, normal_style)
 

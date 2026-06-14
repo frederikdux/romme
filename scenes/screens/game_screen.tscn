@@ -188,9 +188,9 @@ anchor_top = 0.5
 anchor_right = 0.5
 anchor_bottom = 0.5
 offset_left = -240.0
-offset_top = -170.0
+offset_top = -220.0
 offset_right = 240.0
-offset_bottom = 170.0
+offset_bottom = 220.0
 grow_horizontal = 2
 grow_vertical = 2
 
@@ -204,17 +204,23 @@ theme_override_font_sizes/font_size = 32
 text = "Menü"
 horizontal_alignment = 1
 
+[node name="MenuCancelButton" type="Button" parent="MenuOverlay/MenuPanel/MenuVBox"]
+layout_mode = 2
+custom_minimum_size = Vector2(0, 70)
+theme_override_font_sizes/font_size = 28
+text = "Weiterspielen"
+
+[node name="MainMenuButton" type="Button" parent="MenuOverlay/MenuPanel/MenuVBox"]
+layout_mode = 2
+custom_minimum_size = Vector2(0, 70)
+theme_override_font_sizes/font_size = 28
+text = "Zum Hauptmenü"
+
 [node name="NewGameConfirmButton" type="Button" parent="MenuOverlay/MenuPanel/MenuVBox"]
 layout_mode = 2
 custom_minimum_size = Vector2(0, 70)
 theme_override_font_sizes/font_size = 28
 text = "Neues Spiel"
-
-[node name="MenuCancelButton" type="Button" parent="MenuOverlay/MenuPanel/MenuVBox"]
-layout_mode = 2
-custom_minimum_size = Vector2(0, 70)
-theme_override_font_sizes/font_size = 28
-text = "Abbrechen"
 
 [node name="SetupOverlay" type="Control" parent="."]
 visible = false
@@ -358,3 +364,11 @@ layout_mode = 2
 custom_minimum_size = Vector2(0, 70)
 theme_override_font_sizes/font_size = 28
 text = "Zurück"
+
+[node name="NewGameConfirmDialog" type="ConfirmationDialog" parent="."]
+title = "Neues Spiel"
+initial_position = 1
+size = Vector2i(420, 160)
+dialog_text = "Spielstand verwerfen und neues Spiel starten?"
+ok_button_text = "Neues Spiel"
+cancel_button_text = "Abbrechen"

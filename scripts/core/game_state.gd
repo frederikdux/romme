@@ -33,8 +33,10 @@ var players: Array[Player] = []
 var num_opponents: int = 1
 
 ## Number of jokers added to the deck for new_game(). Configurable via the
-## options overlay before starting the next round.
-var joker_count: int = DEFAULT_JOKER_COUNT
+## options overlay before starting the next round. Static so the choice
+## survives across GameState instances — e.g. when "Einstellungen" is opened
+## from the main menu in its own throwaway GameScreen/GameState.
+static var joker_count: int = DEFAULT_JOKER_COUNT
 
 var draw_deck: Deck
 var discard_pile: Array[Card] = []

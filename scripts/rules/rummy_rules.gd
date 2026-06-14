@@ -209,6 +209,76 @@ static func get_joker_substitutes(cards: Array) -> Array:
 
 	return result
 
+## Computes the rank range [min, max] (in _run_rank terms) that meld_cards —
+## already a valid run — occupies, including the ranks its own jokers fill.
+## Returns {"suit": int, "min": int, "max": int, "ace_high": bool}.
+static func _run_span(meld_cards: Array) -> Dictionary:
+	var split := _split_jokers(meld_cards)
+	var layout := _resolve_run_layout(split["non_jokers"], split["jokers"])
+	var ace_high: bool = layout["ace_high"]
+	var ranks: Array = layout["ranks"]
+	var lo: int = ranks[0]
+	var hi: int = ranks[ranks.size() - 1]
+	if layout["low_ext"]:
+		lo -= 1
+	if layout["high_ext"]:
+		hi += 1
+	return {"suit": split["non_jokers"][0].suit, "min": lo, "max": hi, "ace_high": ace_high}
+
+## True if extra_cards (each either a Joker or a normal card) can exactly
+## fill target_ranks (one card per rank, any order): non-joker cards must
+## match suit and land on one of the target ranks, and jokers fill whatever
+## ranks are left over.
+static func _cards_fill_ranks(extra_cards: Array, target_ranks: Array, suit: int, ace_high: bool) -> bool:
+	var remaining_ranks: Array = target_ranks.duplicate()
+	var jokers := 0
+	for card in extra_cards:
+		if card.is_joker:
+			jokers += 1
+			continue
+		if card.suit != suit:
+			return false
+		var r: int = _run_rank(card, ace_high)
+		if not remaining_ranks.has(r):
+			return false
+		remaining_ranks.erase(r)
+	return remaining_ranks.size() == jokers
+
+## Given a table run meld's cards and a set of selected hand cards (which must
+## include at least one Joker), determines whether the hand cards can be
+## validly attached to the run's low end ("left") or high end ("right") to
+## form a longer valid run. Returns {"left": bool, "right": bool} — either or
+## both may be true (e.g. two jokers could extend both ends). Both are false
+## if meld_cards isn't a valid run, extra_cards is empty, or neither end works.
+static func get_run_attach_sides(meld_cards: Array, extra_cards: Array) -> Dictionary:
+	var result := {"left": false, "right": false}
+	if extra_cards.is_empty() or not is_valid_run(meld_cards):
+		return result
+
+	var span := _run_span(meld_cards)
+	var ace_high: bool = span["ace_high"]
+	var n := extra_cards.size()
+	var range_min: int = 2 if ace_high else 1
+	var range_max: int = 14 if ace_high else 13
+
+	var left_lo: int = span["min"] - n
+	if left_lo >= range_min:
+		var left_ranks: Array = []
+		for r in range(left_lo, span["min"]):
+			left_ranks.append(r)
+		if _cards_fill_ranks(extra_cards, left_ranks, span["suit"], ace_high):
+			result["left"] = true
+
+	var right_hi: int = span["max"] + n
+	if right_hi <= range_max:
+		var right_ranks: Array = []
+		for r in range(span["max"] + 1, right_hi + 1):
+			right_ranks.append(r)
+		if _cards_fill_ranks(extra_cards, right_ranks, span["suit"], ace_high):
+			result["right"] = true
+
+	return result
+
 ## True if hand_card is the real card a joker within meld_cards represents —
 ## i.e. hand_card could be swapped onto the table for that joker (same suit
 ## and rank as one of get_joker_substitutes(meld_cards)). False if meld_cards

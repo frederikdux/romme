@@ -1,9 +1,9 @@
 class_name SaveGameService
 extends RefCounted
 
-## Placeholder for future save/load support. Not wired into the UI yet —
-## GameState already exposes to_dict()/from_dict() so this just needs to
-## read/write that dictionary as JSON when persistence becomes a priority.
+## Reads and writes the full GameState (via to_dict()/from_dict()) as JSON to
+## SAVE_PATH, so an in-progress round survives an app close/kill and can be
+## resumed via "Weiterspielen" (see GameScreen.resume_saved_game).
 
 const SAVE_PATH := "user://savegame.json"
 
@@ -27,3 +27,12 @@ static func load_into(game_state: GameState) -> bool:
 		return false
 	game_state.from_dict(parsed)
 	return true
+
+## True if a saved game exists ("Weiterspielen" should be offered).
+static func has_save() -> bool:
+	return FileAccess.file_exists(SAVE_PATH)
+
+## Deletes the save file, if any (called once a round has ended).
+static func delete_save() -> void:
+	if FileAccess.file_exists(SAVE_PATH):
+		DirAccess.remove_absolute(SAVE_PATH)

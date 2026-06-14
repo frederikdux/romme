@@ -10,10 +10,11 @@ config_version=5
 
 [application]
 
-config/name="TestRomme"
+config/name="Rommé"
 run/main_scene="uid://3g6xqlywp2c0"
 config/features=PackedStringArray("4.6", "Mobile")
-config/icon="res://icon.svg"
+boot_splash/image="uid://b200dg3lyfgoj"
+config/icon="uid://d0bgibrkkootb"
 
 [display]
 
