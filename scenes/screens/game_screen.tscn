@@ -187,188 +187,75 @@ anchor_left = 0.5
 anchor_top = 0.5
 anchor_right = 0.5
 anchor_bottom = 0.5
-offset_left = -240.0
-offset_top = -220.0
-offset_right = 240.0
-offset_bottom = 220.0
+offset_left = -260.0
+offset_top = -270.0
+offset_right = 260.0
+offset_bottom = 270.0
 grow_horizontal = 2
 grow_vertical = 2
 
-[node name="MenuVBox" type="VBoxContainer" parent="MenuOverlay/MenuPanel"]
+[node name="MenuButtonsVBox" type="VBoxContainer" parent="MenuOverlay/MenuPanel"]
 layout_mode = 2
 theme_override_constants/separation = 20
 
-[node name="MenuTitleLabel" type="Label" parent="MenuOverlay/MenuPanel/MenuVBox"]
+[node name="MenuTitleLabel" type="Label" parent="MenuOverlay/MenuPanel/MenuButtonsVBox"]
 layout_mode = 2
 theme_override_font_sizes/font_size = 32
 text = "Menü"
 horizontal_alignment = 1
 
-[node name="MenuCancelButton" type="Button" parent="MenuOverlay/MenuPanel/MenuVBox"]
+[node name="MenuCancelButton" type="Button" parent="MenuOverlay/MenuPanel/MenuButtonsVBox"]
 layout_mode = 2
 custom_minimum_size = Vector2(0, 70)
 theme_override_font_sizes/font_size = 28
 text = "Weiterspielen"
 
-[node name="MainMenuButton" type="Button" parent="MenuOverlay/MenuPanel/MenuVBox"]
+[node name="MainMenuButton" type="Button" parent="MenuOverlay/MenuPanel/MenuButtonsVBox"]
 layout_mode = 2
 custom_minimum_size = Vector2(0, 70)
 theme_override_font_sizes/font_size = 28
 text = "Zum Hauptmenü"
 
-[node name="NewGameConfirmButton" type="Button" parent="MenuOverlay/MenuPanel/MenuVBox"]
+[node name="MainMenuHintLabel" type="Label" parent="MenuOverlay/MenuPanel/MenuButtonsVBox"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 18
+text = "Spielstand wird gespeichert"
+horizontal_alignment = 1
+
+[node name="NewGameButton" type="Button" parent="MenuOverlay/MenuPanel/MenuButtonsVBox"]
 layout_mode = 2
 custom_minimum_size = Vector2(0, 70)
 theme_override_font_sizes/font_size = 28
 text = "Neues Spiel"
 
-[node name="SetupOverlay" type="Control" parent="."]
+[node name="MenuConfirmVBox" type="VBoxContainer" parent="MenuOverlay/MenuPanel"]
 visible = false
-layout_mode = 1
-anchors_preset = 15
-anchor_right = 1.0
-anchor_bottom = 1.0
-
-[node name="SetupOverlayBg" type="ColorRect" parent="SetupOverlay"]
-layout_mode = 1
-anchors_preset = 15
-anchor_right = 1.0
-anchor_bottom = 1.0
-color = Color(0, 0, 0, 0.85)
-
-[node name="SetupPanel" type="PanelContainer" parent="SetupOverlay"]
-layout_mode = 1
-anchors_preset = 8
-anchor_left = 0.5
-anchor_top = 0.5
-anchor_right = 0.5
-anchor_bottom = 0.5
-offset_left = -260.0
-offset_top = -250.0
-offset_right = 260.0
-offset_bottom = 250.0
-grow_horizontal = 2
-grow_vertical = 2
-
-[node name="SetupVBox" type="VBoxContainer" parent="SetupOverlay/SetupPanel"]
 layout_mode = 2
-theme_override_constants/separation = 20
+theme_override_constants/separation = 24
 
-[node name="SetupTitleLabel" type="Label" parent="SetupOverlay/SetupPanel/SetupVBox"]
+[node name="MenuConfirmLabel" type="Label" parent="MenuOverlay/MenuPanel/MenuConfirmVBox"]
 layout_mode = 2
-theme_override_font_sizes/font_size = 32
-text = "Wie viele Gegner?"
+size_flags_vertical = 3
+theme_override_font_sizes/font_size = 30
+text = "Spielstand verwerfen und neu starten?"
 horizontal_alignment = 1
+vertical_alignment = 1
+autowrap_mode = 2
 
-[node name="Opponents1Button" type="Button" parent="SetupOverlay/SetupPanel/SetupVBox"]
+[node name="MenuConfirmRow" type="HBoxContainer" parent="MenuOverlay/MenuPanel/MenuConfirmVBox"]
 layout_mode = 2
-custom_minimum_size = Vector2(0, 70)
-theme_override_font_sizes/font_size = 28
-text = "1 Gegner"
+theme_override_constants/separation = 16
 
-[node name="Opponents2Button" type="Button" parent="SetupOverlay/SetupPanel/SetupVBox"]
-layout_mode = 2
-custom_minimum_size = Vector2(0, 70)
-theme_override_font_sizes/font_size = 28
-text = "2 Gegner"
-
-[node name="Opponents3Button" type="Button" parent="SetupOverlay/SetupPanel/SetupVBox"]
-layout_mode = 2
-custom_minimum_size = Vector2(0, 70)
-theme_override_font_sizes/font_size = 28
-text = "3 Gegner"
-
-[node name="Opponents4Button" type="Button" parent="SetupOverlay/SetupPanel/SetupVBox"]
-layout_mode = 2
-custom_minimum_size = Vector2(0, 70)
-theme_override_font_sizes/font_size = 28
-text = "4 Gegner"
-
-[node name="OptionsButton" type="Button" parent="SetupOverlay/SetupPanel/SetupVBox"]
-layout_mode = 2
-custom_minimum_size = Vector2(0, 70)
-theme_override_font_sizes/font_size = 28
-text = "Optionen"
-
-[node name="OptionsOverlay" type="Control" parent="."]
-visible = false
-layout_mode = 1
-anchors_preset = 15
-anchor_right = 1.0
-anchor_bottom = 1.0
-
-[node name="OptionsOverlayBg" type="ColorRect" parent="OptionsOverlay"]
-layout_mode = 1
-anchors_preset = 15
-anchor_right = 1.0
-anchor_bottom = 1.0
-color = Color(0, 0, 0, 0.85)
-
-[node name="OptionsPanel" type="PanelContainer" parent="OptionsOverlay"]
-layout_mode = 1
-anchors_preset = 8
-anchor_left = 0.5
-anchor_top = 0.5
-anchor_right = 0.5
-anchor_bottom = 0.5
-offset_left = -260.0
-offset_top = -180.0
-offset_right = 260.0
-offset_bottom = 180.0
-grow_horizontal = 2
-grow_vertical = 2
-
-[node name="OptionsVBox" type="VBoxContainer" parent="OptionsOverlay/OptionsPanel"]
-layout_mode = 2
-theme_override_constants/separation = 20
-
-[node name="OptionsTitleLabel" type="Label" parent="OptionsOverlay/OptionsPanel/OptionsVBox"]
-layout_mode = 2
-theme_override_font_sizes/font_size = 32
-text = "Optionen"
-horizontal_alignment = 1
-
-[node name="JokerCountRow" type="HBoxContainer" parent="OptionsOverlay/OptionsPanel/OptionsVBox"]
-layout_mode = 2
-theme_override_constants/separation = 12
-
-[node name="JokerCountLabel" type="Label" parent="OptionsOverlay/OptionsPanel/OptionsVBox/JokerCountRow"]
+[node name="MenuConfirmCancelButton" type="Button" parent="MenuOverlay/MenuPanel/MenuConfirmVBox/MenuConfirmRow"]
 layout_mode = 2
 size_flags_horizontal = 3
-theme_override_font_sizes/font_size = 26
-text = "Anzahl Joker"
-vertical_alignment = 1
-
-[node name="JokerCountMinusButton" type="Button" parent="OptionsOverlay/OptionsPanel/OptionsVBox/JokerCountRow"]
-layout_mode = 2
-custom_minimum_size = Vector2(56, 56)
-theme_override_font_sizes/font_size = 28
-text = "-"
-
-[node name="JokerCountValueLabel" type="Label" parent="OptionsOverlay/OptionsPanel/OptionsVBox/JokerCountRow"]
-layout_mode = 2
-custom_minimum_size = Vector2(48, 0)
-theme_override_font_sizes/font_size = 26
-text = "2"
-horizontal_alignment = 1
-vertical_alignment = 1
-
-[node name="JokerCountPlusButton" type="Button" parent="OptionsOverlay/OptionsPanel/OptionsVBox/JokerCountRow"]
-layout_mode = 2
-custom_minimum_size = Vector2(56, 56)
-theme_override_font_sizes/font_size = 28
-text = "+"
-
-[node name="OptionsBackButton" type="Button" parent="OptionsOverlay/OptionsPanel/OptionsVBox"]
-layout_mode = 2
 custom_minimum_size = Vector2(0, 70)
 theme_override_font_sizes/font_size = 28
-text = "Zurück"
+text = "Abbrechen"
 
-[node name="NewGameConfirmDialog" type="ConfirmationDialog" parent="."]
-title = "Neues Spiel"
-initial_position = 1
-size = Vector2i(420, 160)
-dialog_text = "Spielstand verwerfen und neues Spiel starten?"
-ok_button_text = "Neues Spiel"
-cancel_button_text = "Abbrechen"
+[node name="MenuConfirmYesButton" type="Button" parent="MenuOverlay/MenuPanel/MenuConfirmVBox/MenuConfirmRow"]
+layout_mode = 2
+size_flags_horizontal = 3
+custom_minimum_size = Vector2(0, 70)
+theme_override_font_sizes/font_size = 28
+text = "Ja, neu starten"

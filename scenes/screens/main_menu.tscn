@@ -44,6 +44,10 @@ theme_override_font_sizes/font_size = 96
 text = "Rommé"
 horizontal_alignment = 1
 
+[node name="CardFanContainer" type="Control" parent="MarginContainer/VBoxContainer"]
+layout_mode = 2
+size_flags_vertical = 3
+
 [node name="ButtonsCenter" type="VBoxContainer" parent="MarginContainer/VBoxContainer"]
 layout_mode = 2
 size_flags_vertical = 3

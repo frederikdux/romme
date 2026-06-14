@@ -25,6 +25,29 @@ logic so the game rules stay testable/portable. All Godot/UI code lives in `scri
 reads from `GameState` and calls its methods, then re-renders. When adding a feature, add the
 logic to `GameState`/`RummyRules` first; UI scripts only orchestrate rendering and forward input.
 
+### Screens & navigation (`scripts/ui/main.gd`)
+
+`main.gd` is the app entry point (`scenes/main.tscn`), hosting one screen at a time in a
+`CanvasLayer`. Screens communicate only via signals — `main.gd` owns all `PackedScene` preloads
+and switches screens in `_set_screen()` (`queue_free`s the old screen, adds the new one). Flow:
+`MainMenu` → `GameSetupScreen` → `GameScreen`, with `SettingsScreen` reachable from `MainMenu`.
+
+- `MainMenu` (`main_menu.tscn`/`.gd`): title + a decorative static card fan + three buttons.
+  `new_game_requested` → `GameSetupScreen`; `continue_requested` → new `GameScreen` +
+  `resume_saved_game()` (button disabled unless `SaveGameService.has_save()`);
+  `settings_requested` → `SettingsScreen`.
+- `GameSetupScreen` (`game_setup_screen.tscn`/`.gd`): player name field, a 4-button segmented
+  control for opponent count (1-4), played/won stats, and a "?" rules overlay. `back_requested`
+  → `MainMenu`; `start_game_requested(opponent_count)` → new `GameScreen`, then
+  `GameScreen.start_new_game(opponent_count)`.
+- `SettingsScreen` (`settings_screen.tscn`/`.gd`): joker-count stepper (writes
+  `GameState.joker_count`), player name field, sound toggle, and "Statistik zurücksetzen" (behind
+  a `ConfirmationDialog`) — all persisted via `SettingsService`/`StatsService`. `back_requested`
+  → `MainMenu`.
+- `GameScreen` (`game_screen.tscn`/`.gd`): `return_to_main_menu` (round ended, or "Zum
+  Hauptmenü" in the pause menu) → `MainMenu`; `new_game_requested` (pause menu's "Ja, neu
+  starten") → `GameSetupScreen`.
+
 ### GameState (`scripts/core/game_state.gd`)
 
 The single source of truth for a match, owned by `GameScreen` (`scripts/ui/game_screen.gd`).
@@ -47,6 +70,36 @@ The single source of truth for a match, owned by `GameScreen` (`scripts/ui/game_
 - `to_dict()` / `from_dict()` serialize the full state; `SaveGameService`
   (`scripts/persistence/save_game_service.gd`) reads/writes this as JSON to `user://savegame.json`
   but is not yet wired into the UI.
+- `static var human_player_name` and `static var joker_count` both follow the same
+  "static-survives-instances" pattern: they're set from `GameSetupScreen`/`SettingsScreen` (loaded
+  from `SettingsService`) before `new_game()`/`Player.new()` and persist across `GameState`
+  instances within the app session.
+
+### Persistence services (`scripts/persistence/`)
+
+Static-class pattern (`class_name X extends RefCounted`, `static func` only, no instance state):
+
+- `SettingsService` reads/writes `user://settings.json` (`player_name`, `card_design`,
+  `joker_count`, `sound_enabled`), with a `DEFAULT_*` fallback for each. Loaded once in
+  `GameScreen._ready()` to set `GameState.human_player_name`/`GameState.joker_count`/
+  `CardView.active_theme`. `GameSetupScreen` and `SettingsScreen` each load the full settings
+  dict, mutate their own field(s), and save the whole dict back (see `SettingsScreen`'s
+  `_save_settings_field()`) so adjusting one setting never clobbers the others. `card_design` has
+  no UI anymore but is still loaded/applied (static default `"klassisch"`).
+- `StatsService` reads/writes `user://stats.json` (`played`/`won`/`lost`). `record_result()` is
+  called once per finished round from `_schedule_return_to_main_menu()`; `reset_stats()` (called
+  from `SettingsScreen`'s "Statistik zurücksetzen", behind a confirmation dialog) resets all
+  three counters to 0.
+
+### Card design theme (`scripts/ui/card_view.gd`)
+
+`CardView` has an `enum CardTheme { CLASSIC, DARK }` (named `CardTheme`, not `Theme`, because
+`Theme` shadows Godot's built-in `Theme` resource class), a `static var active_theme` (the theme
+used by all "live" cards, set from `SettingsService`/the setup dialog), and an instance
+`var theme_override: int = -1` so the setup dialog's two preview cards can each force a theme
+regardless of `active_theme`. `_effective_theme()` resolves `theme_override` if set, else
+`active_theme`; `theme_from_string()`/`theme_to_string()` (de)serialize the `"klassisch"`/`"dunkel"`
+strings used by `SettingsService`. `CardBack` (face-down cards) is unaffected by this theme.
 
 ### RummyRules (`scripts/rules/rummy_rules.gd`)
 
@@ -79,9 +132,23 @@ Single large script driving `scenes/screens/game_screen.tscn`. Key patterns to f
   `Control` slot — never tween `custom_minimum_size`/spacer sizes, as that retriggers layout and
   shifts the whole screen (and `add_theme_constant_override` inside a `resized` handler causes
   infinite recursion).
-- Gotcha: a brand-new `class_name X extends Control` script referenced from another script in the
-  same editing session may not be resolvable by name yet (global class cache lag). Use
-  `const XScript: GDScript = preload("res://path/to/x.gd")` and `XScript.new() as Control` instead
-  (see `JokerPlaceholderScript` in `game_screen.gd`).
+- Gotcha: a brand-new `class_name X` script (any base class, not just `Control`) referenced from
+  another script in the same editing session may not be resolvable by name yet (global class
+  cache lag) — "Identifier X not declared in the current scope". Use
+  `const XScript: GDScript = preload("res://path/to/x.gd")` instead, then `XScript.new()` /
+  `XScript.some_static_func()` / `XScript.SOME_CONST` (see `JokerPlaceholderScript`,
+  `SettingsServiceScript`, `StatsServiceScript` in `game_screen.gd`).
+- Gotcha: don't name an `enum` (or any class member) `Theme` — it shadows Godot's built-in `Theme`
+  resource class and fails with "The member 'Theme' shadows a native class" plus cascading parse
+  errors on every use of the enum (see `CardView.CardTheme`).
 - Bot turns are paced via `_run_bot_turn_sequence()` / `_run_single_bot_turn()`, awaiting timers
   between each `GameState` step call so the UI can animate draws/melds/discards.
+- `GameScreen` only owns the game board and the pause menu (`MenuOverlay`) — "Neues Spiel" setup,
+  "Einstellungen", and the rules text now live in `GameSetupScreen`/`SettingsScreen` (see "Screens
+  & navigation"). `start_new_game(opponent_count: int)` starts a round directly (no setup dialog
+  inside `GameScreen`); `resume_saved_game()` is unchanged.
+- The pause menu (`MenuOverlay`) toggles between `MenuButtonsVBox` ("Weiterspielen" /
+  "Zum Hauptmenü" / "Neues Spiel") and `MenuConfirmVBox` ("Abbrechen" / "Ja, neu starten") via
+  `_set_menu_confirm_visible()`, which crossfades the two `VBoxContainer`s with a short tween
+  (`MENU_CONFIRM_TWEEN_SEC`). "Ja, neu starten" deletes the save file and emits
+  `new_game_requested` (handled by `main.gd`, which routes to `GameSetupScreen`).

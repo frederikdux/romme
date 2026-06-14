@@ -5,19 +5,28 @@ extends Control
 ## This script may freely depend on Control/Button/etc — GameState must not.
 ##
 ## Entry points called by main.gd after instantiating this scene:
-## start_new_game(), resume_saved_game(), show_settings(). Emits
-## return_to_main_menu when the screen should be replaced by MainMenu again.
+## start_new_game(opponent_count), resume_saved_game(). Emits
+## return_to_main_menu when the screen should be replaced by MainMenu again,
+## and new_game_requested when the pause menu's "Ja, neu starten" is confirmed
+## (main.gd then shows GameSetup).
 
-## Emitted when the player chooses "Zum Hauptmenü" from the pause overlay,
-## when "Zurück" is pressed in the options overlay after it was opened via
-## show_settings(), or a short while after a round ends.
+## Emitted when the player chooses "Zum Hauptmenü" from the pause overlay, or
+## a short while after a round ends.
 signal return_to_main_menu
+
+## Emitted when "Ja, neu starten" is confirmed in the pause overlay — the
+## current save is already deleted by the time this fires.
+signal new_game_requested
 
 const CardViewScene: PackedScene = preload("res://scenes/components/card_view.tscn")
 ## Loaded directly (rather than relying on the JokerPlaceholder class_name
 ## being registered) so this still resolves even before the editor's global
 ## script class cache has picked up a newly added script.
 const JokerPlaceholderScript: GDScript = preload("res://scripts/ui/joker_placeholder.gd")
+## Loaded directly (rather than via class_name) for the same global-class-cache-lag
+## reason as JokerPlaceholderScript above — both are new this session.
+const SettingsServiceScript: GDScript = preload("res://scripts/persistence/settings_service.gd")
+const StatsServiceScript: GDScript = preload("res://scripts/persistence/stats_service.gd")
 
 ## Hand card size. Cards always span the full width of PlayerHandArea —
 ## _render_hand() computes the HBoxContainer separation from the available
@@ -135,6 +144,10 @@ const NEW_CARD_FLY_DURATION := 0.3
 const JOKER_SWAP_PULSE_COLOR := Color(0.5, 1.6, 0.5)
 const JOKER_SWAP_PULSE_DURATION := 0.4
 const JOKER_SWAP_INVALID_FLASH_SEC := 0.2
+
+## Crossfade duration when the pause menu swaps between its button list and
+## the "Neues Spiel" confirmation view.
+const MENU_CONFIRM_TWEEN_SEC := 0.15
 
 ## Drop-target highlight states applied to a table meld button or the Tisch
 ## area while a card/group is being dragged over it.
@@ -254,22 +267,13 @@ var phase_indicator_row: Control
 var settings_button: Button
 var menu_overlay: Control
 var menu_overlay_bg: Control
-var new_game_confirm_button: Button
+var menu_buttons_vbox: Control
 var menu_cancel_button: Button
 var main_menu_button: Button
-var new_game_confirm_dialog: ConfirmationDialog
-var setup_overlay: Control
-var opponents_1_button: Button
-var opponents_2_button: Button
-var opponents_3_button: Button
-var opponents_4_button: Button
-var options_button: Button
-var options_overlay: Control
-var options_overlay_bg: Control
-var options_back_button: Button
-var joker_count_value_label: Label
-var joker_count_minus_button: Button
-var joker_count_plus_button: Button
+var new_game_button: Button
+var menu_confirm_vbox: Control
+var menu_confirm_cancel_button: Button
+var menu_confirm_yes_button: Button
 ## Re-entrancy guard for _run_bot_turn_sequence().
 var _bot_turn_in_progress: bool = false
 ## True once a game has been started or resumed; guards _persist_game_state()
@@ -279,10 +283,6 @@ var _game_in_progress: bool = false
 ## second game_over-triggered persist (e.g. from a stray UI action) doesn't
 ## queue a second return.
 var _round_over_handled: bool = false
-## True while the options overlay was opened via show_settings() (from
-## MainMenu's "Einstellungen"), so "Zurück" returns to MainMenu instead of
-## the opponent-count setup dialog.
-var _settings_opened_from_main_menu: bool = false
 
 func _ready() -> void:
 	set_anchors_preset(Control.PRESET_FULL_RECT)
@@ -315,39 +315,23 @@ func _ready() -> void:
 	settings_button = _require_node("SettingsButton") as Button
 	menu_overlay = _require_node("MenuOverlay") as Control
 	menu_overlay_bg = _require_node("MenuOverlayBg") as Control
-	new_game_confirm_button = _require_node("NewGameConfirmButton") as Button
+	menu_buttons_vbox = _require_node("MenuButtonsVBox") as Control
 	menu_cancel_button = _require_node("MenuCancelButton") as Button
 	main_menu_button = _require_node("MainMenuButton") as Button
-	new_game_confirm_dialog = _require_node("NewGameConfirmDialog") as ConfirmationDialog
-	setup_overlay = _require_node("SetupOverlay") as Control
-	opponents_1_button = _require_node("Opponents1Button") as Button
-	opponents_2_button = _require_node("Opponents2Button") as Button
-	opponents_3_button = _require_node("Opponents3Button") as Button
-	opponents_4_button = _require_node("Opponents4Button") as Button
-	options_button = _require_node("OptionsButton") as Button
-	options_overlay = _require_node("OptionsOverlay") as Control
-	options_overlay_bg = _require_node("OptionsOverlayBg") as Control
-	options_back_button = _require_node("OptionsBackButton") as Button
-	joker_count_value_label = _require_node("JokerCountValueLabel") as Label
-	joker_count_minus_button = _require_node("JokerCountMinusButton") as Button
-	joker_count_plus_button = _require_node("JokerCountPlusButton") as Button
+	new_game_button = _require_node("NewGameButton") as Button
+	menu_confirm_vbox = _require_node("MenuConfirmVBox") as Control
+	menu_confirm_cancel_button = _require_node("MenuConfirmCancelButton") as Button
+	menu_confirm_yes_button = _require_node("MenuConfirmYesButton") as Button
 
 	meldung_legen_button.pressed.connect(_on_meldung_legen_pressed)
 	anlegen_button.pressed.connect(_on_anlegen_pressed)
 	abwerfen_button.pressed.connect(_on_abwerfen_pressed)
 	settings_button.pressed.connect(_on_settings_pressed)
-	new_game_confirm_button.pressed.connect(_on_new_game_confirm_pressed)
 	menu_cancel_button.pressed.connect(_on_menu_cancel_pressed)
 	main_menu_button.pressed.connect(_on_main_menu_pressed)
-	new_game_confirm_dialog.confirmed.connect(_on_new_game_confirmed)
-	opponents_1_button.pressed.connect(_on_opponent_count_selected.bind(1))
-	opponents_2_button.pressed.connect(_on_opponent_count_selected.bind(2))
-	opponents_3_button.pressed.connect(_on_opponent_count_selected.bind(3))
-	opponents_4_button.pressed.connect(_on_opponent_count_selected.bind(4))
-	options_button.pressed.connect(_on_options_pressed)
-	options_back_button.pressed.connect(_on_options_back_pressed)
-	joker_count_minus_button.pressed.connect(_on_joker_count_step.bind(-1))
-	joker_count_plus_button.pressed.connect(_on_joker_count_step.bind(1))
+	new_game_button.pressed.connect(_on_new_game_button_pressed)
+	menu_confirm_cancel_button.pressed.connect(_on_menu_confirm_cancel_pressed)
+	menu_confirm_yes_button.pressed.connect(_on_menu_confirm_yes_pressed)
 
 	background_rect.color = COLOR_BACKGROUND
 	background_rect.mouse_filter = Control.MOUSE_FILTER_STOP
@@ -355,9 +339,6 @@ func _ready() -> void:
 
 	menu_overlay_bg.mouse_filter = Control.MOUSE_FILTER_STOP
 	menu_overlay_bg.gui_input.connect(_on_menu_overlay_bg_gui_input)
-
-	options_overlay_bg.mouse_filter = Control.MOUSE_FILTER_STOP
-	options_overlay_bg.gui_input.connect(_on_options_overlay_bg_gui_input)
 
 	var tisch_style: StyleBoxFlat = StyleBoxFlat.new()
 	tisch_style.bg_color = COLOR_TISCH_BG
@@ -378,28 +359,27 @@ func _ready() -> void:
 	menu_panel_style.set_corner_radius_all(12)
 	menu_panel_style.set_content_margin_all(24)
 	(_require_node("MenuPanel") as PanelContainer).add_theme_stylebox_override("panel", menu_panel_style)
-	(_require_node("SetupPanel") as PanelContainer).add_theme_stylebox_override("panel", menu_panel_style.duplicate())
 
 	# Static button colors — never change with turn phase.
 	_style_button(settings_button, COLOR_GREY_DARK)
-	_style_button(new_game_confirm_button, COLOR_ACCENT_BLUE)
-	_style_button(menu_cancel_button, COLOR_GREY_NEUTRAL)
+	_style_button(menu_cancel_button, COLOR_GREEN)
 	_style_button(main_menu_button, COLOR_GREY_NEUTRAL)
-	_style_button(opponents_1_button, COLOR_ACCENT_BLUE)
-	_style_button(opponents_2_button, COLOR_ACCENT_BLUE)
-	_style_button(opponents_3_button, COLOR_ACCENT_BLUE)
-	_style_button(opponents_4_button, COLOR_ACCENT_BLUE)
-	_style_button(options_button, COLOR_GREY_NEUTRAL)
-	_style_button(options_back_button, COLOR_GREY_NEUTRAL)
-	_style_button(joker_count_minus_button, COLOR_ACCENT_BLUE)
-	_style_button(joker_count_plus_button, COLOR_ACCENT_BLUE)
-	(_require_node("OptionsPanel") as PanelContainer).add_theme_stylebox_override("panel", menu_panel_style.duplicate())
+	_style_button(new_game_button, COLOR_RED)
+	_style_button(menu_confirm_cancel_button, COLOR_GREY_NEUTRAL)
+	_style_button(menu_confirm_yes_button, COLOR_RED)
+
+	(_require_node("MainMenuHintLabel") as Label).add_theme_color_override("font_color", COLOR_GREY_NEUTRAL)
 
 	_drag_layer = Control.new()
 	_drag_layer.name = &"DragLayer"
 	_drag_layer.set_anchors_preset(Control.PRESET_FULL_RECT)
 	_drag_layer.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	add_child(_drag_layer)
+
+	var loaded_settings: Dictionary = SettingsServiceScript.load_settings()
+	GameState.human_player_name = loaded_settings.get("player_name", SettingsServiceScript.DEFAULT_PLAYER_NAME)
+	GameState.joker_count = loaded_settings.get("joker_count", SettingsServiceScript.DEFAULT_JOKER_COUNT)
+	CardView.active_theme = CardView.theme_from_string(loaded_settings.get("card_design", SettingsServiceScript.DEFAULT_CARD_DESIGN))
 
 	game_state = GameState.new()
 
@@ -414,9 +394,15 @@ func _require_node(node_name: String) -> Node:
 
 # ── Screen entry points (called by main.gd) ────────────────────────────────────
 
-## Shows the "Wie viele Gegner?" setup dialog for a fresh game.
-func start_new_game() -> void:
-	setup_overlay.visible = true
+## Starts a fresh game for the given opponent count (chosen on GameSetupScreen)
+## and discards any previous save.
+func start_new_game(opponent_count: int) -> void:
+	SaveGameService.delete_save()
+	_round_over_handled = false
+	_game_in_progress = true
+	_clear_selection()
+	game_state.new_game(opponent_count)
+	_refresh_ui()
 
 ## Loads user://savegame.json (if any) and continues the bot turn sequence if
 ## it's currently a bot's turn. No-op if no save exists.
@@ -429,18 +415,11 @@ func resume_saved_game() -> void:
 	if not game_state.game_over and not game_state.is_human_turn():
 		_schedule_bot_turn()
 
-## Opens the joker-count options screen directly from the main menu; "Zurück"
-## returns to the main menu instead of the opponent-count dialog.
-func show_settings() -> void:
-	_settings_opened_from_main_menu = true
-	options_overlay.visible = true
-	_render_joker_count_label()
-
 # ── Persistence ───────────────────────────────────────────────────────────────
 
 ## Saves the current game state to disk, or deletes the save file once the
 ## round has ended (so "Weiterspielen" stops appearing). No-op before a game
-## has started (e.g. a focus-out while SetupOverlay is still showing).
+## has started.
 func _persist_game_state() -> void:
 	if not _game_in_progress:
 		return
@@ -456,6 +435,7 @@ func _schedule_return_to_main_menu() -> void:
 	if _round_over_handled:
 		return
 	_round_over_handled = true
+	StatsServiceScript.record_result(game_state.winner_index == GameState.HUMAN_INDEX)
 	get_tree().create_timer(ROUND_OVER_RETURN_DELAY_SEC).timeout.connect(func() -> void:
 		return_to_main_menu.emit())
 
@@ -642,16 +622,6 @@ func _on_menu_overlay_bg_gui_input(event: InputEvent) -> void:
 	if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
 		_on_menu_cancel_pressed()
 
-func _on_new_game_confirm_pressed() -> void:
-	new_game_confirm_dialog.popup_centered()
-
-func _on_new_game_confirmed() -> void:
-	menu_overlay.visible = false
-	SaveGameService.delete_save()
-	_game_in_progress = false
-	_round_over_handled = false
-	setup_overlay.visible = true
-
 ## "Zum Hauptmenü": persists the current game (if any) and returns to MainMenu.
 func _on_main_menu_pressed() -> void:
 	menu_overlay.visible = false
@@ -659,44 +629,37 @@ func _on_main_menu_pressed() -> void:
 	if not _round_over_handled:
 		return_to_main_menu.emit()
 
-# ── Setup overlay ─────────────────────────────────────────────────────────────
+## "Neues Spiel": crossfades from the button list to the discard-confirmation view.
+func _on_new_game_button_pressed() -> void:
+	_set_menu_confirm_visible(true)
 
-func _on_opponent_count_selected(count: int) -> void:
-	setup_overlay.visible = false
-	_clear_selection()
-	game_state.new_game(count)
+func _on_menu_confirm_cancel_pressed() -> void:
+	_set_menu_confirm_visible(false)
+
+## "Ja, neu starten": discards the save and routes to GameSetup for a fresh game.
+func _on_menu_confirm_yes_pressed() -> void:
 	SaveGameService.delete_save()
+	_game_in_progress = false
 	_round_over_handled = false
-	_game_in_progress = true
-	_refresh_ui()
+	menu_overlay.visible = false
+	_set_menu_confirm_visible(false)
+	new_game_requested.emit()
 
-# ── Options overlay ───────────────────────────────────────────────────────────
+## Crossfades between MenuButtonsVBox and MenuConfirmVBox.
+func _set_menu_confirm_visible(show_confirm: bool) -> void:
+	var shown_box := menu_confirm_vbox if show_confirm else menu_buttons_vbox
+	var hidden_box := menu_buttons_vbox if show_confirm else menu_confirm_vbox
 
-func _on_options_pressed() -> void:
-	setup_overlay.visible = false
-	options_overlay.visible = true
-	_render_joker_count_label()
-
-func _on_options_back_pressed() -> void:
-	options_overlay.visible = false
-	if _settings_opened_from_main_menu:
-		_settings_opened_from_main_menu = false
-		return_to_main_menu.emit()
-	else:
-		setup_overlay.visible = true
-
-func _on_options_overlay_bg_gui_input(event: InputEvent) -> void:
-	if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
-		_on_options_back_pressed()
-
-## Adjusts game_state.joker_count by delta, clamped to
-## [0, GameState.MAX_JOKER_COUNT], and refreshes the value label.
-func _on_joker_count_step(delta: int) -> void:
-	game_state.joker_count = clampi(game_state.joker_count + delta, 0, GameState.MAX_JOKER_COUNT)
-	_render_joker_count_label()
-
-func _render_joker_count_label() -> void:
-	joker_count_value_label.text = str(game_state.joker_count)
+	shown_box.visible = true
+	shown_box.modulate.a = 0.0
+	var tween := create_tween()
+	tween.tween_property(hidden_box, "modulate:a", 0.0, MENU_CONFIRM_TWEEN_SEC)\
+		.set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+	tween.parallel().tween_property(shown_box, "modulate:a", 1.0, MENU_CONFIRM_TWEEN_SEC)\
+		.set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+	tween.tween_callback(func() -> void:
+		hidden_box.visible = false
+		hidden_box.modulate.a = 1.0)
 
 ## Toggles selection of a table meld (click to select, click again to deselect).
 func _on_meld_tapped(meld_index: int) -> void:
@@ -1187,7 +1150,7 @@ func _render_phase_indicator() -> void:
 func _render_header() -> void:
 	var player_points: int = game_state.get_human_penalty_points()
 
-	header_player_label.text = "Spieler: %d Punkte" % player_points
+	header_player_label.text = "%s: %d Punkte" % [game_state.get_player_name(GameState.HUMAN_INDEX), player_points]
 	header_round_label.text = "Runde %d" % game_state.round_number
 	header_round_label.add_theme_color_override("font_color", HEADER_TEXT_COLOR)
 

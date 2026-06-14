@@ -28,6 +28,11 @@ const MAX_OPPONENTS := 4
 const DEFAULT_JOKER_COUNT := 6
 const MAX_JOKER_COUNT := 8
 
+## Name of the human player (players[HUMAN_INDEX]), chosen in the setup
+## dialog and persisted via SettingsService. Static so it survives across
+## GameState instances, same as joker_count.
+static var human_player_name: String = "Spieler"
+
 ## players[0] is the human, players[1..num_opponents] are bots.
 var players: Array[Player] = []
 var num_opponents: int = 1
@@ -59,14 +64,14 @@ var status_text: String = ""
 var round_number: int = 0
 
 func _init() -> void:
-	players = [Player.new("Du")]
+	players = [Player.new(human_player_name)]
 	draw_deck = Deck.new()
 
 ## Resets all state and deals a fresh game with the given number of bot opponents.
 func new_game(p_num_opponents: int = num_opponents) -> void:
 	num_opponents = clampi(p_num_opponents, MIN_OPPONENTS, MAX_OPPONENTS)
 
-	players = [Player.new("Du")]
+	players = [Player.new(human_player_name)]
 	for i in range(1, num_opponents + 1):
 		players.append(Player.new("Gegner %d" % i))
 
@@ -156,7 +161,7 @@ func human_draw_from_deck() -> bool:
 	var card := draw_deck.draw_card()
 	players[HUMAN_INDEX].add_card(card)
 	human_has_drawn = true
-	status_text = "Du hast %s gezogen. Lege Meldungen oder wirf eine Karte ab." % card.to_display_string()
+	status_text = "%s gezogen — leg eine Meldung oder wirf ab." % card.to_display_string()
 	return true
 
 func human_draw_from_discard() -> bool:
@@ -172,7 +177,7 @@ func human_draw_from_discard() -> bool:
 	var card: Card = discard_pile.pop_back()
 	players[HUMAN_INDEX].add_card(card)
 	human_has_drawn = true
-	status_text = "Du hast %s vom Ablagestapel genommen. Lege Meldungen oder wirf eine Karte ab." % card.to_display_string()
+	status_text = "%s von der Ablage genommen — leg eine Meldung oder wirf ab." % card.to_display_string()
 	return true
 
 # ── Meld ──────────────────────────────────────────────────────────────────────
@@ -201,7 +206,7 @@ func human_lay_meld(indices: Array[int]) -> bool:
 	if not human_has_melded:
 		var score := RummyRules.meld_score(selected)
 		if score < FIRST_MELD_MIN_POINTS:
-			status_text = "Erstmeldung braucht mindestens %d Punkte — diese hat %d." % [FIRST_MELD_MIN_POINTS, score]
+			status_text = "Erstmeldung: mind. %d Punkte nötig (diese: %d)." % [FIRST_MELD_MIN_POINTS, score]
 			return false
 
 	_remove_cards_by_indices(players[HUMAN_INDEX], indices)
@@ -210,7 +215,7 @@ func human_lay_meld(indices: Array[int]) -> bool:
 
 	if _check_game_over():
 		return true
-	status_text = "Meldung gelegt! Leg weitere Meldungen oder wirf eine Karte ab."
+	status_text = "Meldung gelegt! Weiter melden oder abwerfen."
 	return true
 
 ## Extends an existing table meld with cards from the human's hand.
@@ -219,7 +224,7 @@ func human_extend_meld(meld_index: int, card_indices: Array[int]) -> bool:
 	if not _assert_human_drew():
 		return false
 	if not human_has_melded:
-		status_text = "Du musst erst eine eigene Meldung legen, bevor du anlegen kannst."
+		status_text = "Erst eigene Meldung legen, dann anlegen."
 		return false
 	if meld_index < 0 or meld_index >= table_melds.size():
 		status_text = "Ungültige Meldung."
@@ -267,7 +272,7 @@ func human_swap_joker(meld_index: int, hand_index: int, joker_index: int) -> boo
 	if not _assert_human_action_allowed():
 		return false
 	if not human_has_melded:
-		status_text = "Joker-Tausch erst nach deiner Erstmeldung möglich."
+		status_text = "Joker-Tausch erst nach Erstmeldung möglich."
 		return false
 	if meld_index < 0 or meld_index >= table_melds.size():
 		status_text = "Ungültige Meldung."
@@ -300,7 +305,7 @@ func human_swap_joker(meld_index: int, hand_index: int, joker_index: int) -> boo
 	players[HUMAN_INDEX].sort_hand()
 	meld_entry["cards"] = RummyRules.order_meld_cards(cards)
 
-	status_text = "Du hast den Joker gegen %s getauscht." % hand_card.to_display_string()
+	status_text = "Joker gegen %s getauscht." % hand_card.to_display_string()
 	return true
 
 # ── Discard ───────────────────────────────────────────────────────────────────
@@ -321,7 +326,7 @@ func human_discard_card(hand_index: int) -> bool:
 		return true
 
 	_advance_turn()
-	status_text = "Du hast %s abgeworfen. %s ist dran." % [card.to_display_string(), players[current_player_index].player_name]
+	status_text = "%s abgeworfen — %s ist dran." % [card.to_display_string(), players[current_player_index].player_name]
 	return true
 
 func human_sort_hand() -> void:
@@ -425,7 +430,7 @@ func bot_discard_step() -> Dictionary:
 
 	_advance_turn()
 	if current_player_index == HUMAN_INDEX:
-		status_text = "%s hat %s abgeworfen. Dein Zug — zieh eine Karte." % [players[bot_idx].player_name, discarded.to_display_string()]
+		status_text = "%s abgeworfen — dein Zug, zieh eine Karte." % discarded.to_display_string()
 	else:
 		status_text = "%s denkt..." % players[current_player_index].player_name
 	return {"discarded": discarded, "game_over": false}
@@ -626,7 +631,7 @@ func from_dict(data: Dictionary) -> void:
 	for entry in data.get("players", []):
 		players.append(Player.from_dict(entry))
 	if players.is_empty():
-		players.append(Player.new("Du"))
+		players.append(Player.new(human_player_name))
 
 	num_opponents = data.get("num_opponents", players.size() - 1)
 

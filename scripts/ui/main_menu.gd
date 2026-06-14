@@ -14,7 +14,22 @@ const COLOR_ACCENT_BLUE := Color(0.129, 0.588, 0.953) # #2196F3
 const COLOR_GREEN := Color(0.298, 0.686, 0.314) # #4CAF50
 const COLOR_GREY_NEUTRAL := Color(0.45, 0.45, 0.45)
 
+const CardViewScene: PackedScene = preload("res://scenes/components/card_view.tscn")
+
+## Size of each decorative card in the main menu's card fan.
+const FAN_CARD_SIZE := Vector2(120, 168)
+## (suit, rank, x offset of pivot from center, rotation in degrees) for each
+## of the 4 fanned-out cards, left to right: Herz-As, Pik-König, Karo-Dame,
+## Kreuz-Bube.
+const FAN_CARDS := [
+	{"suit": Card.Suit.HEARTS, "rank": 1, "dx": -90.0, "rotation": -18.0},
+	{"suit": Card.Suit.SPADES, "rank": 13, "dx": -30.0, "rotation": -6.0},
+	{"suit": Card.Suit.DIAMONDS, "rank": 12, "dx": 30.0, "rotation": 6.0},
+	{"suit": Card.Suit.CLUBS, "rank": 11, "dx": 90.0, "rotation": 18.0},
+]
+
 var background_texture: TextureRect
+var card_fan_container: Control
 var new_game_button: Button
 var continue_button: Button
 var settings_button: Button
@@ -22,6 +37,7 @@ var version_label: Label
 
 func _ready() -> void:
 	background_texture = _require_node("BackgroundTexture") as TextureRect
+	card_fan_container = _require_node("CardFanContainer") as Control
 	new_game_button = _require_node("NewGameButton") as Button
 	continue_button = _require_node("ContinueButton") as Button
 	settings_button = _require_node("SettingsButton") as Button
@@ -44,6 +60,28 @@ func _ready() -> void:
 	continue_button.disabled = not has_save
 	if not has_save:
 		continue_button.tooltip_text = "Kein gespeichertes Spiel"
+
+	_build_card_fan()
+
+## Builds the decorative, non-interactive fan of 4 playing cards shown between
+## the title and the buttons. Each card is anchored to the center of
+## CardFanContainer (anchors all 0.5) and positioned/rotated via offsets and
+## pivot_offset, so the layout doesn't depend on the container's final size.
+func _build_card_fan() -> void:
+	for fan_card in FAN_CARDS:
+		var card_view := CardViewScene.instantiate() as CardView
+		card_view.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		card_view.disabled = true
+		card_view.set_anchors_preset(Control.PRESET_CENTER)
+		var dx: float = fan_card["dx"]
+		card_view.offset_left = -FAN_CARD_SIZE.x * 0.5 + dx
+		card_view.offset_top = -FAN_CARD_SIZE.y
+		card_view.offset_right = card_view.offset_left + FAN_CARD_SIZE.x
+		card_view.offset_bottom = card_view.offset_top + FAN_CARD_SIZE.y
+		card_view.pivot_offset = Vector2(FAN_CARD_SIZE.x * 0.5, FAN_CARD_SIZE.y)
+		card_view.rotation_degrees = fan_card["rotation"]
+		card_fan_container.add_child(card_view)
+		card_view.setup(Card.new(fan_card["suit"], fan_card["rank"]), -1)
 
 ## Finds a required child node by name or fails loudly.
 func _require_node(node_name: String) -> Node:

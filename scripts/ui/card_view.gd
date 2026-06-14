@@ -12,11 +12,25 @@ signal drag_started(hand_index: int)
 signal card_dragged(hand_index: int, global_pos: Vector2)
 signal drag_ended(hand_index: int, global_pos: Vector2)
 
-const BG_COLOR := Color(0.98, 0.98, 0.941) # #FAFAF0
-const BORDER_COLOR := Color(0.8, 0.8, 0.8) # #CCCCCC
+## Card design ("Kartendesign"), chosen in the setup dialog and persisted via
+## SettingsService. active_theme is the theme used by all "live" cards;
+## theme_override (per-instance) lets the setup dialog's preview cards force a
+## specific theme regardless of active_theme.
+## Named "CardTheme" (not "Theme") because "Theme" shadows Godot's built-in
+## Theme resource class.
+enum CardTheme { CLASSIC, DARK }
+static var active_theme: CardTheme = CardTheme.CLASSIC
+var theme_override: int = -1
+
+const BG_COLOR_CLASSIC := Color(0.98, 0.98, 0.941) # #FAFAF0
+const BG_COLOR_DARK := Color(0.169, 0.169, 0.169) # #2B2B2B
+const BORDER_COLOR_CLASSIC := Color(0.8, 0.8, 0.8) # #CCCCCC
+const BORDER_COLOR_DARK := Color(0.333, 0.333, 0.333) # #555555
 const SELECTED_BORDER_COLOR := Color(1.0, 0.843, 0.0) # #FFD700
-const SUIT_COLOR_RED := Color(0.8, 0.0, 0.0) # #CC0000
-const SUIT_COLOR_DARK := Color(0.133, 0.133, 0.133) # #222222
+const SUIT_COLOR_RED_CLASSIC := Color(0.8, 0.0, 0.0) # #CC0000
+const SUIT_COLOR_RED_DARK := Color(1.0, 0.42, 0.42) # #FF6B6B
+const SUIT_COLOR_DARK_CLASSIC := Color(0.133, 0.133, 0.133) # #222222
+const SUIT_COLOR_DARK_DARK := Color(0.95, 0.95, 0.95) # #F2F2F2
 const JOKER_BG_COLOR := Color(0.55, 0.16, 0.75) # vivid purple
 const JOKER_BORDER_COLOR := Color(1.0, 0.75, 0.0) # gold
 const JOKER_TEXT_COLOR := Color(1.0, 1.0, 1.0)
@@ -60,7 +74,11 @@ func setup(p_card: Card, p_hand_index: int) -> void:
 		center_label = $CenterLabel
 		bottom_right_label = $BottomRightLabel
 
-	var color: Color = SUIT_COLOR_DARK
+	var theme := _effective_theme()
+	var dark_text_color := SUIT_COLOR_DARK_DARK if theme == CardTheme.DARK else SUIT_COLOR_DARK_CLASSIC
+	var red_text_color := SUIT_COLOR_RED_DARK if theme == CardTheme.DARK else SUIT_COLOR_RED_CLASSIC
+
+	var color: Color = dark_text_color
 	var corner_text: String
 	var center_text: String
 
@@ -73,7 +91,7 @@ func setup(p_card: Card, p_hand_index: int) -> void:
 		center_label.add_theme_font_size_override("font_size", 28)
 	else:
 		var is_red := card.suit == Card.Suit.HEARTS or card.suit == Card.Suit.DIAMONDS
-		color = SUIT_COLOR_RED if is_red else SUIT_COLOR_DARK
+		color = red_text_color if is_red else dark_text_color
 		corner_text = card.to_display_string()
 		center_text = card.get_suit_symbol()
 
@@ -127,15 +145,19 @@ func _gui_input(event: InputEvent) -> void:
 
 func _update_style() -> void:
 	var is_joker_card := card != null and card.is_joker
+	var theme := _effective_theme()
+	var bg_color := BG_COLOR_DARK if theme == CardTheme.DARK else BG_COLOR_CLASSIC
+	var border_color := BORDER_COLOR_DARK if theme == CardTheme.DARK else BORDER_COLOR_CLASSIC
+
 	var style := StyleBoxFlat.new()
-	style.bg_color = JOKER_BG_COLOR if is_joker_card else BG_COLOR
+	style.bg_color = JOKER_BG_COLOR if is_joker_card else bg_color
 	style.set_corner_radius_all(CORNER_RADIUS)
 	if is_selected:
 		style.set_border_width_all(SELECTED_BORDER_WIDTH)
 		style.border_color = SELECTED_BORDER_COLOR
 	else:
 		style.set_border_width_all(BORDER_WIDTH)
-		style.border_color = JOKER_BORDER_COLOR if is_joker_card else BORDER_COLOR
+		style.border_color = JOKER_BORDER_COLOR if is_joker_card else border_color
 		style.shadow_color = Color(0.0, 0.0, 0.0, 0.35)
 		style.shadow_size = 3
 		style.shadow_offset = Vector2(1, 2)
@@ -144,3 +166,18 @@ func _update_style() -> void:
 	add_theme_stylebox_override("pressed", style)
 	add_theme_stylebox_override("disabled", style)
 	add_theme_stylebox_override("focus", StyleBoxEmpty.new())
+
+## Returns theme_override if set (>= 0), otherwise the global active_theme —
+## used by setup() and _update_style() to pick colors.
+func _effective_theme() -> CardTheme:
+	if theme_override >= 0:
+		return theme_override as CardTheme
+	return active_theme
+
+## Maps the persisted "card_design" setting string to a CardTheme value.
+static func theme_from_string(design: String) -> CardTheme:
+	return CardTheme.DARK if design == "dunkel" else CardTheme.CLASSIC
+
+## Maps a CardTheme value back to the persisted "card_design" setting string.
+static func theme_to_string(theme: CardTheme) -> String:
+	return "dunkel" if theme == CardTheme.DARK else "klassisch"
